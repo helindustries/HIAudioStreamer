@@ -343,3 +343,18 @@ QList<AudioBridge::DeviceInfo> AudioBridge::OutputDevices()
 {
     return Endpoints(eRender);
 }
+
+QString AudioBridge::DefaultOutputId()
+{
+    auto enumerator = ComPtr<IMMDeviceEnumerator>();
+    auto device = ComPtr<IMMDevice>();
+    auto* id = LPWSTR{nullptr};
+    auto result = QString();
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+            IID_PPV_ARGS(&enumerator)))
+        && SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device))
+        && SUCCEEDED(device->GetId(&id)))
+        result = QString::fromWCharArray(id);
+    if (id != nullptr) CoTaskMemFree(id);
+    return result;
+}

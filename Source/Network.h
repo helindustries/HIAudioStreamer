@@ -25,6 +25,7 @@ namespace AudioBridge
         std::atomic<quint64> PacketsSent{0};
         std::atomic<quint64> PacketsRejected{0};
         std::array<std::atomic<qint64>, MaxPeers> LastReceivedMs{};
+        std::array<std::atomic<quint64>, MaxPeers> PacketsReceived{};
     };
 
     // Lives on its own thread: on macOS the event loop stops while a tray menu is open, and audio

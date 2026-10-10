@@ -125,6 +125,27 @@ QString AudioBridge::Bridge::Status() const
     return lines.isEmpty() ? QStringLiteral("No connections") : lines.join(QLatin1Char('\n'));
 }
 
+QString AudioBridge::Bridge::Diagnostics() const
+{
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    auto line = QStringLiteral("send %1 capture %2 Hz sent %3 rejected %4")
+                    .arg(Current.Send ? QStringLiteral("on") : QStringLiteral("off"))
+                    .arg(Stats.CaptureRate.load())
+                    .arg(Stats.PacketsSent.load())
+                    .arg(Stats.PacketsRejected.load());
+    for (auto i = 0; i < std::min<int>(MaxPeers, Current.Peers.size()); ++i)
+    {
+        const auto last = Stats.LastReceivedMs[i].load();
+        line += QStringLiteral(" | %1 received %2 last %3 buffered %4 ms underruns %5")
+                    .arg(Current.Peers[i].Name)
+                    .arg(Stats.PacketsReceived[i].load())
+                    .arg(last > 0 ? QStringLiteral("%1 ms ago").arg(now - last) : QStringLiteral("never"))
+                    .arg(Incoming[i]->BufferedMs.load())
+                    .arg(Incoming[i]->Underruns.load());
+    }
+    return line + (Errors.isEmpty() ? QString() : QStringLiteral(" | errors: ") + Errors.join("; "));
+}
+
 void AudioBridge::Bridge::StartPairing(const QString& address)
 {
     auto* network = NetworkObject.get();

@@ -3,6 +3,10 @@
 #include "AudioBackend.h"
 #include "Autostart.h"
 
+#include <QtCore/QDateTime>
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QStandardPaths>
 #include <QtGui/QActionGroup>
 #include <QtGui/QCursor>
 #include <QtGui/QPainter>
@@ -19,6 +23,8 @@ namespace
     constexpr auto IconSize = 64;
     constexpr auto MessageMs = 5000;
     constexpr auto Title = "AudioBridge";
+    constexpr auto DiagnosticsEveryTicks = 10;
+    constexpr auto MaxLogBytes = 1024 * 1024;
 
     // A speaker, with sound waves while anything is being sent or played. Drawn rather than
     // shipped as a file; on macOS it is a template image so the menu bar can tint it.
@@ -107,6 +113,7 @@ AudioBridge::Tray::Tray()
     connect(&Link, &Bridge::Paired, this, &Tray::HandlePaired);
     connect(&Link, &Bridge::PairingFailed, this, &Tray::HandlePairingFailed);
     connect(&Link, &Bridge::Failed, this, [this](const QString& message) {
+        WriteDiagnostics(QStringLiteral("error: ") + message);
         Icon.showMessage(QString::fromUtf8(Title), message, QSystemTrayIcon::Warning, MessageMs);
     });
 #ifndef Q_OS_MACOS
@@ -120,7 +127,9 @@ AudioBridge::Tray::Tray()
     Icon.setIcon(MakeIcon(false));
     Icon.show();
     RefreshMenus();
+    DefaultOutput = DefaultOutputId();
     Link.Apply(Current);
+    WriteDiagnostics(QStringLiteral("started, default output %1").arg(DefaultOutput));
     RefreshStatus();
     StatusTimer.start(StatusRefreshMs);
     if (Current.Peers.isEmpty())
@@ -137,8 +146,41 @@ void AudioBridge::Tray::Commit()
     RefreshStatus();
 }
 
+// Neither OS moves a running stream when the default output changes, so "System Default" has
+// to be followed by hand. On macOS the system tap is clocked by the default output as well,
+// which is why both streams restart rather than only the playback.
+void AudioBridge::Tray::FollowDefaultOutput()
+{
+    const auto current = DefaultOutputId();
+    if (current != DefaultOutput && !current.isEmpty())
+    {
+        WriteDiagnostics(QStringLiteral("default output changed to %1").arg(current));
+        DefaultOutput = current;
+        if (Current.Output.isEmpty()) Link.Apply(Current);
+    }
+}
+
+void AudioBridge::Tray::WriteDiagnostics(const QString& line)
+{
+    const auto folder = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    QDir().mkpath(folder);
+    auto file = QFile(folder + QStringLiteral("/AudioBridge.log"));
+    const auto mode = file.size() > MaxLogBytes ? QIODevice::WriteOnly | QIODevice::Truncate
+                                                : QIODevice::WriteOnly | QIODevice::Append;
+    if (file.open(mode))
+        file.write((QDateTime::currentDateTime().toString(Qt::ISODate) + QLatin1Char(' ') + line
+                    + QLatin1Char('\n'))
+                       .toUtf8());
+}
+
 void AudioBridge::Tray::RefreshStatus()
 {
+    FollowDefaultOutput();
+    if (++TicksSinceDiagnostics >= DiagnosticsEveryTicks)
+    {
+        TicksSinceDiagnostics = 0;
+        WriteDiagnostics(Link.Diagnostics());
+    }
     const auto lines = Link.Status().split(QLatin1Char('\n'));
     for (auto i = std::size_t{0}; i < StatusLines.size(); ++i)
     {

@@ -309,3 +309,8 @@ QList<AudioBridge::DeviceInfo> AudioBridge::OutputDevices()
 {
     return Devices(kAudioObjectPropertyScopeOutput);
 }
+
+QString AudioBridge::DefaultOutputId()
+{
+    return StringProperty(DefaultDevice(false), kAudioDevicePropertyDeviceUID);
+}

@@ -28,6 +28,9 @@ namespace AudioBridge
 
         void Apply(const Config& config);
         [[nodiscard]] QString Status() const;
+        // One line of counters for the log: enough to tell "nothing arrives" from "arrives but is
+        // rejected" from "accepted but not playing".
+        [[nodiscard]] QString Diagnostics() const;
         [[nodiscard]] bool Active() const;
 
         // Passed on to the network thread, so the tray never touches it directly.

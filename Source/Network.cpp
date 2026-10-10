@@ -341,6 +341,7 @@ void AudioBridge::Network::HandleAudio(const QByteArray& header, const QByteArra
         Incoming[slot]->Push(Frames.data(), frames, rate);
         Stats.LastReceivedMs[slot].store(QDateTime::currentMSecsSinceEpoch(),
             std::memory_order_relaxed);
+        Stats.PacketsReceived[slot].fetch_add(1, std::memory_order_relaxed);
     }
     else
         Stats.PacketsRejected.fetch_add(1, std::memory_order_relaxed);

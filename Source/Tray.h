@@ -27,6 +27,8 @@ namespace AudioBridge
         void Commit();
         void RefreshMenus();
         void RefreshStatus();
+        void FollowDefaultOutput();
+        void WriteDiagnostics(const QString& line);
         void AddConnection();
         void HandleCodeNeeded(const QString& name, const QString& address);
         void HandleCodeShown(const QString& name, const QString& address, const QString& code);
@@ -48,5 +50,7 @@ namespace AudioBridge
         QMenu* ConnectionsMenu = nullptr;
         QPointer<QMessageBox> CodeBox;
         bool ShowingActive = false;
+        QString DefaultOutput;
+        int TicksSinceDiagnostics = 0;
     };
 } // namespace AudioBridge

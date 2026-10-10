@@ -40,4 +40,6 @@ namespace AudioBridge
 
     [[nodiscard]] QList<DeviceInfo> InputDevices();
     [[nodiscard]] QList<DeviceInfo> OutputDevices();
+    // Polled to notice the system default changing, which neither OS hands to a running stream.
+    [[nodiscard]] QString DefaultOutputId();
 } // namespace AudioBridge
