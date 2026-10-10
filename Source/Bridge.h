@@ -30,7 +30,8 @@ namespace AudioBridge
         [[nodiscard]] QString Status() const;
         // One line of counters for the log: enough to tell "nothing arrives" from "arrives but is
         // rejected" from "accepted but not playing".
-        [[nodiscard]] QString Diagnostics() const;
+        // Not const: reading the peak levels resets them for the next interval.
+        [[nodiscard]] QString Diagnostics();
         [[nodiscard]] bool Active() const;
 
         // Passed on to the network thread, so the tray never touches it directly.

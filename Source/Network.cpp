@@ -339,6 +339,7 @@ void AudioBridge::Network::HandleAudio(const QByteArray& header, const QByteArra
         for (auto i = 0; i < frames * Channels; ++i)
             Frames[i] = qFromLittleEndian<qint16>(samples + i * 2) / 32768.0f;
         Incoming[slot]->Push(Frames.data(), frames, rate);
+        RecordPeak(Stats.ReceivedPeak[slot], Frames.data(), static_cast<std::size_t>(frames) * Channels);
         Stats.LastReceivedMs[slot].store(QDateTime::currentMSecsSinceEpoch(),
             std::memory_order_relaxed);
         Stats.PacketsReceived[slot].fetch_add(1, std::memory_order_relaxed);

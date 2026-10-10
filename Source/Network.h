@@ -9,8 +9,10 @@
 #include <QtNetwork/QHostAddress>
 #include <QtNetwork/QUdpSocket>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <semaphore>
@@ -26,7 +28,22 @@ namespace AudioBridge
         std::atomic<quint64> PacketsRejected{0};
         std::array<std::atomic<qint64>, MaxPeers> LastReceivedMs{};
         std::array<std::atomic<quint64>, MaxPeers> PacketsReceived{};
+        // Highest absolute sample since the last diagnostics line, in thousandths of full scale.
+        // Packets flowing say nothing about whether they carry sound; these do.
+        std::atomic<int> CapturePeak{0};
+        std::array<std::atomic<int>, MaxPeers> ReceivedPeak{};
     };
+
+    // Raises a peak counter to the loudest of the given samples; lock-free, real-time safe.
+    inline void RecordPeak(std::atomic<int>& peak, const float* samples, std::size_t count)
+    {
+        auto loudest = 0.0f;
+        for (auto i = std::size_t{0}; i < count; ++i)
+            loudest = std::max(loudest, std::abs(samples[i]));
+        const auto value = static_cast<int>(loudest * 1000.0f);
+        auto seen = peak.load(std::memory_order_relaxed);
+        while (value > seen && !peak.compare_exchange_weak(seen, value, std::memory_order_relaxed)) {}
+    }
 
     // Lives on its own thread: on macOS the event loop stops while a tray menu is open, and audio
     // carried on that loop would drop out for as long as the menu stays up. Everything public

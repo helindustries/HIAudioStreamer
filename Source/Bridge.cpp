@@ -63,6 +63,7 @@ void AudioBridge::Bridge::Apply(const Config& config)
     {
         auto onFrames = [this](const float* frames, std::size_t count, int rate) {
             Stats.CaptureRate.store(rate, std::memory_order_relaxed);
+            RecordPeak(Stats.CapturePeak, frames, count * Channels);
             Outgoing.Write(frames, count);
             NetworkObject->NotifyCaptured(rate);
         };
@@ -125,20 +126,22 @@ QString AudioBridge::Bridge::Status() const
     return lines.isEmpty() ? QStringLiteral("No connections") : lines.join(QLatin1Char('\n'));
 }
 
-QString AudioBridge::Bridge::Diagnostics() const
+QString AudioBridge::Bridge::Diagnostics()
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
-    auto line = QStringLiteral("send %1 capture %2 Hz sent %3 rejected %4")
+    auto line = QStringLiteral("send %1 capture %2 Hz peak %3 sent %4 rejected %5")
                     .arg(Current.Send ? QStringLiteral("on") : QStringLiteral("off"))
                     .arg(Stats.CaptureRate.load())
+                    .arg(Stats.CapturePeak.exchange(0) / 1000.0, 0, 'f', 3)
                     .arg(Stats.PacketsSent.load())
                     .arg(Stats.PacketsRejected.load());
     for (auto i = 0; i < std::min<int>(MaxPeers, Current.Peers.size()); ++i)
     {
         const auto last = Stats.LastReceivedMs[i].load();
-        line += QStringLiteral(" | %1 received %2 last %3 buffered %4 ms underruns %5")
+        line += QStringLiteral(" | %1 received %2 peak %3 last %4 buffered %5 ms underruns %6")
                     .arg(Current.Peers[i].Name)
                     .arg(Stats.PacketsReceived[i].load())
+                    .arg(Stats.ReceivedPeak[i].exchange(0) / 1000.0, 0, 'f', 3)
                     .arg(last > 0 ? QStringLiteral("%1 ms ago").arg(now - last) : QStringLiteral("never"))
                     .arg(Incoming[i]->BufferedMs.load())
                     .arg(Incoming[i]->Underruns.load());
