@@ -314,3 +314,56 @@ QString AudioBridge::DefaultOutputId()
 {
     return StringProperty(DefaultDevice(false), kAudioDevicePropertyDeviceUID);
 }
+
+namespace
+{
+    // A second, muting tap that nothing reads: while it exists every process but this one is
+    // silent on the outputs, and the capturing tap still hears them. The tap belongs to this
+    // process, so the system removes it - and the mute with it - however the process ends.
+    class TapMute final : public AudioBridge::LocalMute
+    {
+    public:
+        TapMute()
+        {
+            if (@available(macOS 14.2, *))
+            {
+                auto pidAddress = Address(kAudioHardwarePropertyTranslatePIDToProcessObject);
+                auto pid = getpid();
+                auto process = AudioObjectID{kAudioObjectUnknown};
+                auto size = UInt32{sizeof(process)};
+                AudioObjectGetPropertyData(kAudioObjectSystemObject, &pidAddress, sizeof(pid),
+                    &pid, &size, &process);
+                auto* excluded = process != kAudioObjectUnknown ? @[ @(process) ] : @[];
+                auto* description =
+                    [[CATapDescription alloc] initStereoGlobalTapButExcludeProcesses:excluded];
+                description.name = @"AudioBridge mute";
+                description.privateTap = YES;
+                description.muteBehavior = CATapMuted;
+                const auto status = AudioHardwareCreateProcessTap(description, &Tap);
+                if (status != noErr) Failure = Describe("Muting the local output", status);
+            }
+            else
+                Failure = QStringLiteral("Muting the local output needs macOS 14.2 or later");
+        }
+
+        ~TapMute() override
+        {
+            if (Tap != kAudioObjectUnknown) AudioHardwareDestroyProcessTap(Tap);
+        }
+
+        [[nodiscard]] QString Error() const override { return Failure; }
+
+    private:
+        AudioObjectID Tap = kAudioObjectUnknown;
+        QString Failure;
+    };
+} // namespace
+
+std::unique_ptr<AudioBridge::LocalMute> AudioBridge::MuteLocalOutput()
+{
+    return std::make_unique<TapMute>();
+}
+
+void AudioBridge::RestoreLocalOutput()
+{
+}

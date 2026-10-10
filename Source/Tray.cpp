@@ -106,6 +106,10 @@ AudioBridge::Tray::Tray()
     });
     connect(AutostartAction, &QAction::triggered, this, [](bool on) { SetAutostart(on); });
     connect(quit, &QAction::triggered, qApp, &QApplication::quit);
+    // A logoff or shutdown may end the process without running destructors, so the local
+    // output is given back while there is still time.
+    connect(qApp, &QGuiApplication::commitDataRequest, this, [this] { Link.ReleaseLocalMute(); });
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this] { Link.ReleaseLocalMute(); });
     connect(&Menu, &QMenu::aboutToShow, this, &Tray::RefreshMenus);
     connect(&StatusTimer, &QTimer::timeout, this, &Tray::RefreshStatus);
     connect(&Link, &Bridge::PairingCodeNeeded, this, &Tray::HandleCodeNeeded);
@@ -176,6 +180,7 @@ void AudioBridge::Tray::WriteDiagnostics(const QString& line)
 void AudioBridge::Tray::RefreshStatus()
 {
     FollowDefaultOutput();
+    Link.UpdateLocalMute();
     if (++TicksSinceDiagnostics >= DiagnosticsEveryTicks)
     {
         TicksSinceDiagnostics = 0;

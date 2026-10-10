@@ -28,6 +28,7 @@ namespace AudioBridge
         std::atomic<quint64> PacketsRejected{0};
         std::array<std::atomic<qint64>, MaxPeers> LastReceivedMs{};
         std::array<std::atomic<quint64>, MaxPeers> PacketsReceived{};
+        std::array<std::atomic<qint64>, MaxPeers> LastListeningMs{};
         // Highest absolute sample since the last diagnostics line, in thousandths of full scale.
         // Packets flowing say nothing about whether they carry sound; these do.
         std::atomic<int> CapturePeak{0};
@@ -117,6 +118,9 @@ namespace AudioBridge
         void HandlePairResponse(const QByteArray& body, const QHostAddress& from, quint16 port);
         void HandlePairConfirm(const QByteArray& body, const QHostAddress& from);
         void HandleAudio(const QByteArray& header, const QByteArray& body);
+        void HandleListening(const QByteArray& header, const QByteArray& body);
+        void SendHeartbeats();
+        [[nodiscard]] int SlotFor(const QByteArray& keyId) const;
         void SendHello(MessageType type, const QHostAddress& to, quint16 port);
 
         RingBuffer& Outgoing;
@@ -125,6 +129,7 @@ namespace AudioBridge
         QUdpSocket Socket;
         QTimer AskingTimeout;
         QTimer AskedTimeout;
+        QTimer Heartbeat;
         AudioBridge::Config Current;
         QByteArray OwnKeyId;
         std::vector<Remote> Remotes;

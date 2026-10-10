@@ -27,6 +27,11 @@ namespace AudioBridge
         ~Bridge() override;
 
         void Apply(const Config& config);
+        // Called once a second: silences this machine's own output while its system audio is
+        // being played somewhere else, and restores it as soon as no peer confirms listening.
+        void UpdateLocalMute();
+        // For a session ending: lets the output go before the process may be killed outright.
+        void ReleaseLocalMute();
         [[nodiscard]] QString Status() const;
         // One line of counters for the log: enough to tell "nothing arrives" from "arrives but is
         // rejected" from "accepted but not playing".
@@ -60,6 +65,7 @@ namespace AudioBridge
         std::unique_ptr<Network> NetworkObject;
         std::unique_ptr<AudioStream> Capture;
         std::unique_ptr<AudioStream> Render;
+        std::unique_ptr<LocalMute> Mute;
         Config Current;
     };
 } // namespace AudioBridge

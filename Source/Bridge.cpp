@@ -32,6 +32,7 @@ AudioBridge::Bridge::Bridge()
 
 AudioBridge::Bridge::~Bridge()
 {
+    Mute.reset();
     Capture.reset();
     Render.reset();
     auto* network = NetworkObject.get();
@@ -45,6 +46,9 @@ void AudioBridge::Bridge::Apply(const Config& config)
 {
     Current = config;
     Errors.clear();
+    // Released with the streams it belongs to; UpdateLocalMute takes it again within a second
+    // if the new configuration still streams, now on whichever output is the default.
+    Mute.reset();
     Capture.reset();
     Render.reset();
     Stats.CaptureRate.store(0, std::memory_order_relaxed);
@@ -72,6 +76,30 @@ void AudioBridge::Bridge::Apply(const Config& config)
     }
     for (const auto* stream : {Render.get(), Capture.get()})
         if (stream != nullptr && !stream->Error().isEmpty()) Errors.append(stream->Error());
+}
+
+void AudioBridge::Bridge::UpdateLocalMute()
+{
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    auto listened = false;
+    for (auto i = 0; i < std::min<int>(MaxPeers, Current.Peers.size()); ++i)
+        listened = listened
+                   || (Current.Peers[i].Send && now - Stats.LastListeningMs[i].load() < ListeningTimeoutMs);
+    // Only the system mix is moved elsewhere; sending a microphone leaves the speakers alone.
+    const auto streaming = Current.Send && Current.Source.isEmpty() && listened
+                           && Capture != nullptr && Capture->Error().isEmpty();
+    if (streaming && Mute == nullptr)
+    {
+        Mute = MuteLocalOutput();
+        if (!Mute->Error().isEmpty()) emit Failed(Mute->Error());
+    }
+    else if (!streaming && Mute != nullptr)
+        Mute.reset();
+}
+
+void AudioBridge::Bridge::ReleaseLocalMute()
+{
+    Mute.reset();
 }
 
 void AudioBridge::Bridge::Mix(float* frames, std::size_t count, int rate)
@@ -122,6 +150,8 @@ QString AudioBridge::Bridge::Status() const
                                      .arg(Incoming[i]->BufferedMs.load())
                                : QStringLiteral("%1: silent").arg(Current.Peers[i].Name));
     }
+    if (Mute != nullptr && Mute->Error().isEmpty())
+        lines.append(QStringLiteral("Local output muted while streaming"));
     lines += Errors;
     return lines.isEmpty() ? QStringLiteral("No connections") : lines.join(QLatin1Char('\n'));
 }
@@ -129,8 +159,9 @@ QString AudioBridge::Bridge::Status() const
 QString AudioBridge::Bridge::Diagnostics()
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
-    auto line = QStringLiteral("send %1 capture %2 Hz peak %3 sent %4 rejected %5")
+    auto line = QStringLiteral("send %1 local %2 capture %3 Hz peak %4 sent %5 rejected %6")
                     .arg(Current.Send ? QStringLiteral("on") : QStringLiteral("off"))
+                    .arg(Mute != nullptr ? QStringLiteral("muted") : QStringLiteral("playing"))
                     .arg(Stats.CaptureRate.load())
                     .arg(Stats.CapturePeak.exchange(0) / 1000.0, 0, 'f', 3)
                     .arg(Stats.PacketsSent.load())
@@ -138,8 +169,10 @@ QString AudioBridge::Bridge::Diagnostics()
     for (auto i = 0; i < std::min<int>(MaxPeers, Current.Peers.size()); ++i)
     {
         const auto last = Stats.LastReceivedMs[i].load();
-        line += QStringLiteral(" | %1 received %2 peak %3 last %4 buffered %5 ms underruns %6")
+        const auto listening = Stats.LastListeningMs[i].load();
+        line += QStringLiteral(" | %1 listening %2 received %3 peak %4 last %5 buffered %6 ms underruns %7")
                     .arg(Current.Peers[i].Name)
+                    .arg(listening > 0 ? QStringLiteral("%1 ms ago").arg(now - listening) : QStringLiteral("never"))
                     .arg(Stats.PacketsReceived[i].load())
                     .arg(Stats.ReceivedPeak[i].exchange(0) / 1000.0, 0, 'f', 3)
                     .arg(last > 0 ? QStringLiteral("%1 ms ago").arg(now - last) : QStringLiteral("never"))

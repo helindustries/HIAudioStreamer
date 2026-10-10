@@ -86,6 +86,7 @@ AudioBridge::Network::Network(RingBuffer& outgoing, std::vector<std::unique_ptr<
     , Socket(this)
     , AskingTimeout(this)
     , AskedTimeout(this)
+    , Heartbeat(this)
     , Frames(MaxPacketFrames * Channels)
     , SendFrames(MaxPacketFrames * Channels)
 {
@@ -93,7 +94,9 @@ AudioBridge::Network::Network(RingBuffer& outgoing, std::vector<std::unique_ptr<
     AskingTimeout.setInterval(AskingTimeoutMs);
     AskedTimeout.setSingleShot(true);
     AskedTimeout.setInterval(AskedTimeoutMs);
+    Heartbeat.setInterval(HeartbeatMs);
     connect(&Socket, &QUdpSocket::readyRead, this, &Network::HandleReadyRead);
+    connect(&Heartbeat, &QTimer::timeout, this, &Network::SendHeartbeats);
     connect(&AskingTimeout, &QTimer::timeout, this, [this] {
         Asking.Active = false;
         emit PairingFailed(QStringLiteral("No answer from %1. Is AudioBridge running there?")
@@ -142,12 +145,49 @@ void AudioBridge::Network::Configure(const AudioBridge::Config& config)
     for (auto i = std::size_t{0}; i < Remotes.size(); ++i)
         if (config.Peers[static_cast<qsizetype>(i)].Send && !Remotes[i].Address.isNull())
             targets.push_back({Remotes[i].Key, Remotes[i].Address, Remotes[i].Port});
-    const auto lock = std::scoped_lock(SendMutex);
-    Targets = std::move(targets);
-    SendKeyId = OwnKeyId;
-    // A fresh salt per configuration keeps every nonce unique without resetting the sequence.
-    SendSalt = RandomBytes(SaltSize);
-    SendEnabled = config.Send;
+    {
+        const auto lock = std::scoped_lock(SendMutex);
+        Targets = std::move(targets);
+        SendKeyId = OwnKeyId;
+        // A fresh salt per configuration keeps every nonce unique without resetting the sequence.
+        SendSalt = RandomBytes(SaltSize);
+        SendEnabled = config.Send;
+    }
+    Heartbeat.start();
+    SendHeartbeats();
+}
+
+int AudioBridge::Network::SlotFor(const QByteArray& keyId) const
+{
+    auto slot = -1;
+    for (auto i = 0; i < std::min<int>(MaxPeers, static_cast<int>(Remotes.size())) && slot < 0; ++i)
+        if (Remotes[i].KeyId == keyId) slot = i;
+    return slot;
+}
+
+// Sent whether or not anything plays, to every peer: it says this side is up and would play,
+// which is all the sender needs to decide whether to silence its own output.
+void AudioBridge::Network::SendHeartbeats()
+{
+    const auto header = MessageHeader(MessageType::Listening) + OwnKeyId;
+    for (const auto& remote : Remotes)
+        if (!remote.Address.isNull())
+        {
+            const auto nonce = RandomBytes(NonceSize);
+            Socket.writeDatagram(header + nonce + Seal(remote.Key, nonce, header, QByteArray()),
+                remote.Address, remote.Port);
+        }
+}
+
+void AudioBridge::Network::HandleListening(const QByteArray& header, const QByteArray& body)
+{
+    const auto slot = SlotFor(header.mid(MessageHeaderSize));
+    if (slot >= 0 && body.size() == NonceSize + MacSize
+        && Open(Remotes[slot].Key, body.left(NonceSize), header, body.mid(NonceSize)))
+        Stats.LastListeningMs[slot].store(QDateTime::currentMSecsSinceEpoch(),
+            std::memory_order_relaxed);
+    else
+        Stats.PacketsRejected.fetch_add(1, std::memory_order_relaxed);
 }
 
 void AudioBridge::Network::StartPairing(const QString& address)
@@ -197,6 +237,7 @@ void AudioBridge::Network::Shutdown()
     StopSending = true;
     Wake.release();
     if (Sender.joinable()) Sender.join();
+    Heartbeat.stop();
     AskingTimeout.stop();
     AskedTimeout.stop();
     Socket.close();
@@ -236,6 +277,9 @@ void AudioBridge::Network::HandleReadyRead()
                 break;
             case MessageType::Audio:
                 HandleAudio(data.left(AudioHeaderSize), data.mid(AudioHeaderSize));
+                break;
+            case MessageType::Listening:
+                HandleListening(data.left(AudioHeaderSize), data.mid(AudioHeaderSize));
                 break;
             default:
                 Stats.PacketsRejected.fetch_add(1, std::memory_order_relaxed);
@@ -301,10 +345,7 @@ void AudioBridge::Network::HandlePairConfirm(const QByteArray& body, const QHost
 
 void AudioBridge::Network::HandleAudio(const QByteArray& header, const QByteArray& body)
 {
-    const auto keyId = header.mid(MessageHeaderSize);
-    auto slot = -1;
-    for (auto i = 0; i < static_cast<int>(Remotes.size()) && slot < 0; ++i)
-        if (Remotes[i].KeyId == keyId) slot = i;
+    const auto slot = SlotFor(header.mid(MessageHeaderSize));
 
     const auto nonce = body.left(NonceSize);
     const auto plain = slot >= 0 && slot < MaxPeers && body.size() > NonceSize + MacSize

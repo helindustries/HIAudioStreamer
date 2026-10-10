@@ -2,8 +2,11 @@
 
 #include <QtCore/QString>
 
+#include <QtCore/QSettings>
+
 #include <Windows.h>
 #include <audioclient.h>
+#include <endpointvolume.h>
 #include <audioclientactivationparams.h>
 #include <avrt.h>
 #include <mmdeviceapi.h>
@@ -342,6 +345,91 @@ QList<AudioBridge::DeviceInfo> AudioBridge::InputDevices()
 QList<AudioBridge::DeviceInfo> AudioBridge::OutputDevices()
 {
     return Endpoints(eRender);
+}
+
+namespace
+{
+    constexpr auto MuteDeviceKey = "LocalMute/Device";
+    constexpr auto MuteWasMutedKey = "LocalMute/WasMuted";
+
+    ComPtr<IAudioEndpointVolume> EndpointVolume(const QString& deviceId, QString* resolvedId)
+    {
+        auto enumerator = ComPtr<IMMDeviceEnumerator>();
+        auto device = ComPtr<IMMDevice>();
+        auto volume = ComPtr<IAudioEndpointVolume>();
+        auto* id = LPWSTR{nullptr};
+        auto result = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+            IID_PPV_ARGS(&enumerator));
+        if (SUCCEEDED(result))
+            result = deviceId.isEmpty()
+                         ? enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)
+                         : enumerator->GetDevice(reinterpret_cast<LPCWSTR>(deviceId.utf16()), &device);
+        if (SUCCEEDED(result)) result = device->GetId(&id);
+        if (SUCCEEDED(result) && resolvedId != nullptr) *resolvedId = QString::fromWCharArray(id);
+        if (SUCCEEDED(result))
+            result = device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr,
+                reinterpret_cast<void**>(volume.ReleaseAndGetAddressOf()));
+        if (id != nullptr) CoTaskMemFree(id);
+        return SUCCEEDED(result) ? volume : ComPtr<IAudioEndpointVolume>();
+    }
+
+    // Mutes the default output endpoint. Process loopback captures each application's stream
+    // before the endpoint applies its mute, so the capture still hears everything. The previous
+    // state goes into the settings before muting, so a crash cannot leave the speakers muted
+    // beyond the next start, which calls RestoreLocalOutput.
+    class EndpointMute final : public AudioBridge::LocalMute
+    {
+    public:
+        EndpointMute()
+            : Volume(EndpointVolume(QString(), &DeviceId))
+        {
+            auto muted = BOOL{FALSE};
+            if (Volume != nullptr && SUCCEEDED(Volume->GetMute(&muted)))
+            {
+                WasMuted = muted != FALSE;
+                auto settings = QSettings();
+                settings.setValue(MuteDeviceKey, DeviceId);
+                settings.setValue(MuteWasMutedKey, WasMuted);
+                settings.sync();
+                if (FAILED(Volume->SetMute(TRUE, nullptr)))
+                    Failure = QStringLiteral("Could not mute the local output");
+            }
+            else
+                Failure = QStringLiteral("Could not reach the local output to mute it");
+        }
+
+        ~EndpointMute() override
+        {
+            if (Volume != nullptr) Volume->SetMute(WasMuted ? TRUE : FALSE, nullptr);
+            auto settings = QSettings();
+            settings.remove(QStringLiteral("LocalMute"));
+        }
+
+        [[nodiscard]] QString Error() const override { return Failure; }
+
+    private:
+        QString DeviceId;
+        ComPtr<IAudioEndpointVolume> Volume;
+        bool WasMuted = false;
+        QString Failure;
+    };
+} // namespace
+
+std::unique_ptr<AudioBridge::LocalMute> AudioBridge::MuteLocalOutput()
+{
+    return std::make_unique<EndpointMute>();
+}
+
+void AudioBridge::RestoreLocalOutput()
+{
+    auto settings = QSettings();
+    if (settings.contains(MuteDeviceKey))
+    {
+        const auto volume = EndpointVolume(settings.value(MuteDeviceKey).toString(), nullptr);
+        if (volume != nullptr)
+            volume->SetMute(settings.value(MuteWasMutedKey).toBool() ? TRUE : FALSE, nullptr);
+        settings.remove(QStringLiteral("LocalMute"));
+    }
 }
 
 QString AudioBridge::DefaultOutputId()

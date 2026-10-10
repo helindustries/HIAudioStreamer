@@ -42,4 +42,17 @@ namespace AudioBridge
     [[nodiscard]] QList<DeviceInfo> OutputDevices();
     // Polled to notice the system default changing, which neither OS hands to a running stream.
     [[nodiscard]] QString DefaultOutputId();
+
+    // Silences this machine's own output for as long as it exists, without silencing what the
+    // system capture hears or what AudioBridge itself plays; destroying it restores the output.
+    class LocalMute
+    {
+    public:
+        virtual ~LocalMute() = default;
+        [[nodiscard]] virtual QString Error() const = 0;
+    };
+
+    [[nodiscard]] std::unique_ptr<LocalMute> MuteLocalOutput();
+    // Undoes a mute left behind by a run that ended without destroying its LocalMute.
+    void RestoreLocalOutput();
 } // namespace AudioBridge

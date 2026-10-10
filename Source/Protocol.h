@@ -26,5 +26,10 @@ namespace AudioBridge
         PairResponse = 2,
         PairConfirm = 3,
         Audio = 4,
+        // "I am running and will play what you send", twice a second to every peer. The sender
+        // silences its own output only while one of these keeps arriving.
+        Listening = 5,
     };
+    static constexpr auto HeartbeatMs = 500;
+    static constexpr auto ListeningTimeoutMs = 2000;
 } // namespace AudioBridge
