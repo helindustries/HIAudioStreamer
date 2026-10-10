@@ -12,6 +12,9 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <semaphore>
+#include <thread>
 #include <vector>
 
 namespace AudioBridge
@@ -25,8 +28,13 @@ namespace AudioBridge
     };
 
     // Lives on its own thread: on macOS the event loop stops while a tray menu is open, and audio
-    // carried on that loop would drop out for as long as the menu stays up. Everything public is
-    // called on that thread, through QMetaObject::invokeMethod.
+    // carried on that loop would drop out for as long as the menu stays up. Everything public
+    // except NotifyCaptured is called on that thread, through QMetaObject::invokeMethod.
+    //
+    // Sending runs on a further thread of its own, woken by the capture callback whenever a full
+    // packet is waiting. Polling for it instead took a 2 ms timer, which on Windows means a
+    // multimedia timer thread and an event loop turning 500 times a second - most of the CPU
+    // this used, whether or not there was anything to send.
     class Network : public QObject
     {
         Q_OBJECT
@@ -34,6 +42,10 @@ namespace AudioBridge
     public:
         Network(RingBuffer& outgoing, std::vector<std::unique_ptr<Playout>>& incoming,
             LinkStats& stats);
+        ~Network() override;
+
+        // Real-time safe: called from the capture callback after it wrote to the outgoing ring.
+        void NotifyCaptured(int rate);
 
         void Configure(const AudioBridge::Config& config);
         void StartPairing(const QString& address);
@@ -73,8 +85,16 @@ namespace AudioBridge
             bool Active = false;
         };
 
+        struct Target
+        {
+            QByteArray Key;
+            QHostAddress Address;
+            quint16 Port = 0;
+        };
+
         void HandleReadyRead();
-        void HandleTick();
+        void SendLoop();
+        void SendPending(QUdpSocket& socket);
         void HandlePairRequest(const QByteArray& body, const QHostAddress& from, quint16 port);
         void HandlePairResponse(const QByteArray& body, const QHostAddress& from, quint16 port);
         void HandlePairConfirm(const QByteArray& body, const QHostAddress& from);
@@ -85,7 +105,6 @@ namespace AudioBridge
         std::vector<std::unique_ptr<Playout>>& Incoming;
         LinkStats& Stats;
         QUdpSocket Socket;
-        QTimer Ticker;
         QTimer AskingTimeout;
         QTimer AskedTimeout;
         AudioBridge::Config Current;
@@ -93,8 +112,21 @@ namespace AudioBridge
         std::vector<Remote> Remotes;
         Pending Asked;
         Pending Asking;
-        QByteArray SendSalt;
-        quint64 Sequence = 0;
         std::vector<float> Frames;
+
+        // Shared with the sender thread; Configure replaces them under the mutex.
+        std::mutex SendMutex;
+        std::vector<Target> Targets;
+        QByteArray SendKeyId;
+        QByteArray SendSalt;
+        bool SendEnabled = false;
+
+        // Sender thread only.
+        quint64 Sequence = 0;
+        std::vector<float> SendFrames;
+
+        std::counting_semaphore<> Wake{0};
+        std::atomic<bool> StopSending{false};
+        std::thread Sender;
     };
 } // namespace AudioBridge

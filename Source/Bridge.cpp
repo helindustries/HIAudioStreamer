@@ -64,6 +64,7 @@ void AudioBridge::Bridge::Apply(const Config& config)
         auto onFrames = [this](const float* frames, std::size_t count, int rate) {
             Stats.CaptureRate.store(rate, std::memory_order_relaxed);
             Outgoing.Write(frames, count);
+            NetworkObject->NotifyCaptured(rate);
         };
         Capture = config.Source.isEmpty() ? StartSystemCapture(onFrames)
                                           : StartDeviceCapture(config.Source, onFrames);

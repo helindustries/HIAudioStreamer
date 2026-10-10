@@ -25,8 +25,9 @@
 // cannot be replayed under another sender's id.
 namespace
 {
-    constexpr auto TickMs = 2;
     constexpr auto PacketMs = 5;
+    // Only a backstop, so a stop request is noticed; sending itself is woken by the capture.
+    constexpr auto SenderIdleWait = std::chrono::milliseconds(200);
     constexpr auto AskingTimeoutMs = 15000;
     constexpr auto AskedTimeoutMs = 120000;
     constexpr auto MessageHeaderSize = 5;
@@ -60,6 +61,11 @@ namespace
         return {address, port};
     }
 
+    int PacketFrames(int rate)
+    {
+        return std::clamp(rate * PacketMs / 1000, 1, AudioBridge::MaxPacketFrames);
+    }
+
     bool SameHost(const QHostAddress& a, const QHostAddress& b)
     {
         return a.isEqual(b, QHostAddress::ConvertV4MappedToIPv4);
@@ -78,19 +84,16 @@ AudioBridge::Network::Network(RingBuffer& outgoing, std::vector<std::unique_ptr<
     , Incoming(incoming)
     , Stats(stats)
     , Socket(this)
-    , Ticker(this)
     , AskingTimeout(this)
     , AskedTimeout(this)
     , Frames(MaxPacketFrames * Channels)
+    , SendFrames(MaxPacketFrames * Channels)
 {
-    Ticker.setTimerType(Qt::PreciseTimer);
-    Ticker.setInterval(TickMs);
     AskingTimeout.setSingleShot(true);
     AskingTimeout.setInterval(AskingTimeoutMs);
     AskedTimeout.setSingleShot(true);
     AskedTimeout.setInterval(AskedTimeoutMs);
     connect(&Socket, &QUdpSocket::readyRead, this, &Network::HandleReadyRead);
-    connect(&Ticker, &QTimer::timeout, this, &Network::HandleTick);
     connect(&AskingTimeout, &QTimer::timeout, this, [this] {
         Asking.Active = false;
         emit PairingFailed(QStringLiteral("No answer from %1. Is AudioBridge running there?")
@@ -100,6 +103,19 @@ AudioBridge::Network::Network(RingBuffer& outgoing, std::vector<std::unique_ptr<
         Asked.Active = false;
         emit PairingFailed(QStringLiteral("Pairing with %1 timed out").arg(Asked.Name));
     });
+    Sender = std::thread([this] { SendLoop(); });
+}
+
+AudioBridge::Network::~Network()
+{
+    StopSending = true;
+    Wake.release();
+    if (Sender.joinable()) Sender.join();
+}
+
+void AudioBridge::Network::NotifyCaptured(int rate)
+{
+    if (Outgoing.Available() >= static_cast<std::size_t>(PacketFrames(rate))) Wake.release();
 }
 
 void AudioBridge::Network::Configure(const AudioBridge::Config& config)
@@ -121,9 +137,17 @@ void AudioBridge::Network::Configure(const AudioBridge::Config& config)
                             .arg(config.Port)
                             .arg(Socket.errorString()));
     }
+
+    auto targets = std::vector<Target>();
+    for (auto i = std::size_t{0}; i < Remotes.size(); ++i)
+        if (config.Peers[static_cast<qsizetype>(i)].Send && !Remotes[i].Address.isNull())
+            targets.push_back({Remotes[i].Key, Remotes[i].Address, Remotes[i].Port});
+    const auto lock = std::scoped_lock(SendMutex);
+    Targets = std::move(targets);
+    SendKeyId = OwnKeyId;
+    // A fresh salt per configuration keeps every nonce unique without resetting the sequence.
     SendSalt = RandomBytes(SaltSize);
-    Sequence = 0;
-    Ticker.start();
+    SendEnabled = config.Send;
 }
 
 void AudioBridge::Network::StartPairing(const QString& address)
@@ -170,7 +194,9 @@ void AudioBridge::Network::CancelPairing()
 
 void AudioBridge::Network::Shutdown()
 {
-    Ticker.stop();
+    StopSending = true;
+    Wake.release();
+    if (Sender.joinable()) Sender.join();
     AskingTimeout.stop();
     AskedTimeout.stop();
     Socket.close();
@@ -320,38 +346,48 @@ void AudioBridge::Network::HandleAudio(const QByteArray& header, const QByteArra
         Stats.PacketsRejected.fetch_add(1, std::memory_order_relaxed);
 }
 
-void AudioBridge::Network::HandleTick()
+void AudioBridge::Network::SendLoop()
+{
+    // Its own socket, created on this thread: QUdpSocket may not be shared across threads, and a
+    // plain write needs no event loop. It sends from an ephemeral port, which nothing checks;
+    // the receiver identifies senders by key, not by address.
+    auto socket = QUdpSocket();
+    while (!StopSending)
+    {
+        if (Wake.try_acquire_for(SenderIdleWait)) SendPending(socket);
+    }
+}
+
+void AudioBridge::Network::SendPending(QUdpSocket& socket)
 {
     const auto rate = Stats.CaptureRate.load(std::memory_order_relaxed);
-    const auto packetFrames = std::clamp(rate * PacketMs / 1000, 1, MaxPacketFrames);
-    const auto anyTarget = std::any_of(Remotes.begin(), Remotes.end(),
-        [](const auto& remote) { return remote.Send && !remote.Address.isNull(); });
-    if (!Current.Send || rate <= 0 || !anyTarget)
+    const auto packetFrames = PacketFrames(rate);
+    const auto lock = std::scoped_lock(SendMutex);
+    if (!SendEnabled || rate <= 0 || Targets.empty())
         Outgoing.Skip(Outgoing.Available());
     else
         while (Outgoing.Available() >= static_cast<std::size_t>(packetFrames))
         {
-            Outgoing.Read(Frames.data(), packetFrames);
+            Outgoing.Read(SendFrames.data(), packetFrames);
             auto plain = QByteArray(AudioPlainHeaderSize + packetFrames * Channels * 2, '\0');
             auto* bytes = plain.data();
             qToLittleEndian<quint32>(static_cast<quint32>(rate), bytes);
             qToLittleEndian<quint16>(static_cast<quint16>(packetFrames), bytes + 4);
             for (auto i = 0; i < packetFrames * Channels; ++i)
             {
-                const auto sample = std::clamp(Frames[i], -1.0f, 1.0f);
+                const auto sample = std::clamp(SendFrames[i], -1.0f, 1.0f);
                 qToLittleEndian<qint16>(static_cast<qint16>(std::lround(sample * 32767.0f)),
                     bytes + AudioPlainHeaderSize + i * 2);
             }
 
             auto nonce = SendSalt + QByteArray(8, '\0');
             qToLittleEndian<quint64>(++Sequence, nonce.data() + SaltSize);
-            const auto header = MessageHeader(MessageType::Audio) + OwnKeyId;
-            for (const auto& remote : Remotes)
-                if (remote.Send && !remote.Address.isNull())
-                {
-                    const auto datagram = header + nonce + Seal(remote.Key, nonce, header, plain);
-                    Socket.writeDatagram(datagram, remote.Address, remote.Port);
-                    Stats.PacketsSent.fetch_add(1, std::memory_order_relaxed);
-                }
+            const auto header = MessageHeader(MessageType::Audio) + SendKeyId;
+            for (const auto& target : Targets)
+            {
+                const auto datagram = header + nonce + Seal(target.Key, nonce, header, plain);
+                socket.writeDatagram(datagram, target.Address, target.Port);
+                Stats.PacketsSent.fetch_add(1, std::memory_order_relaxed);
+            }
         }
 }
