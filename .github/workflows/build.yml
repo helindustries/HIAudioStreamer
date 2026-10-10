@@ -8,6 +8,7 @@ on:
 
 env:
   QT_VERSION: '6.9.3'
+  BUILD_DIR: build
 
 jobs:
   windows:
@@ -27,11 +28,11 @@ jobs:
           }
       - name: Build and package
         shell: cmd
-        run: Tools\Build.cmd "%GITHUB_WORKSPACE%\build"
+        run: Tools\Build.cmd "%GITHUB_WORKSPACE%\%BUILD_DIR%"
       - uses: actions/upload-artifact@v7
         with:
           name: windows
-          path: build/HIAudioStreamer-*-setup.exe
+          path: ${{ env.BUILD_DIR }}/HIAudioStreamer-*-setup.exe
           if-no-files-found: error
 
   macos:
@@ -48,11 +49,11 @@ jobs:
       - name: Build and package
         run: |
           brew list ninja >/dev/null 2>&1 || brew install ninja
-          Tools/Build.sh "$GITHUB_WORKSPACE/build"
+          Tools/Build.sh "$GITHUB_WORKSPACE/$BUILD_DIR"
       - uses: actions/upload-artifact@v7
         with:
           name: macos
-          path: build/HIAudioStreamer-*-macos.dmg
+          path: ${{ env.BUILD_DIR }}/HIAudioStreamer-*-macos.dmg
           if-no-files-found: error
 
   release:
