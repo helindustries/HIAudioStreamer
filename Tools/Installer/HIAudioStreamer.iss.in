@@ -1,0 +1,78 @@
+; Configured by CMake into the build directory; Tools\Build.cmd compiles the result with ISCC.
+
+#define AppName "HIAudioStreamer"
+#define AppExe "HIAudioStreamer.exe"
+#define SourceDir "@INSTALLER_SOURCE_DIR@"
+#define BuildDir "@INSTALLER_BUILD_DIR@"
+
+[Setup]
+AppId={{E7C428E2-8FE7-4048-B475-524B721928BE}
+AppName={#AppName}
+AppVersion=@PROJECT_VERSION@
+AppPublisher=Hel Industries
+AppPublisherURL=https://github.com/helindustries/HIAudioStreamer
+DefaultDirName={autopf}\{#AppName}
+DisableProgramGroupPage=yes
+; The firewall rule that lets peers in needs elevation.
+PrivilegesRequired=admin
+ArchitecturesAllowed=x64
+ArchitecturesInstallIn64BitMode=x64
+; Process loopback capture, which System Audio is built on, needs build 20348 or later.
+MinVersion=10.0.20348
+LicenseFile={#SourceDir}\LICENSE
+OutputDir={#BuildDir}
+OutputBaseFilename={#AppName}-@PROJECT_VERSION@-windows-x64-setup
+UninstallDisplayIcon={app}\{#AppExe}
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+CloseApplications=no
+
+[Files]
+Source: "{#BuildDir}\Deploy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
+Source: "{#SourceDir}\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"
+Source: "{#SourceDir}\Documentation\Licenses\*"; DestDir: "{app}\Licenses"
+
+[Icons]
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
+
+[Registry]
+; Start at Login is set by the app itself; this only takes it away again on uninstall.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "{#AppName}"; Flags: dontcreatekey uninsdeletevalue
+
+[Run]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#AppName}"""; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#AppName}"" dir=in action=allow protocol=UDP profile=private,domain program=""{app}\{#AppExe}"""; Flags: runhidden
+Filename: "{app}\{#AppExe}"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+
+[UninstallRun]
+Filename: "{app}\{#AppExe}"; Parameters: "--restore-output"; Flags: runhidden waituntilterminated; RunOnceId: "RestoreOutput"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#AppName}"""; Flags: runhidden; RunOnceId: "RemoveFirewallRule"
+
+[Code]
+// A tray app has no window for Restart Manager to close, so a running copy is stopped outright.
+// Stopped that way it cannot unmute the speakers it muted while streaming, which is what
+// --restore-output catches up on.
+procedure StopRunningCopy(const Restore: Boolean);
+var
+    ResultCode: Integer;
+    Exe: String;
+begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE,
+        ewWaitUntilTerminated, ResultCode);
+    Exe := ExpandConstant('{app}\{#AppExe}');
+    if Restore and FileExists(Exe) then
+        ExecAsOriginalUser(Exe, '--restore-output', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+    StopRunningCopy(True);
+    Result := '';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+    StopRunningCopy(False);
+    Result := True;
+end;

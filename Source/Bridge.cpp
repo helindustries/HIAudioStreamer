@@ -12,7 +12,7 @@ namespace
     constexpr auto SilentAfterMs = 1000;
 } // namespace
 
-AudioBridge::Bridge::Bridge()
+HIAudioStreamer::Bridge::Bridge()
     : Outgoing(BufferFrames)
     , MixScratch(MixChunkFrames * Channels)
     , NetworkObject(std::make_unique<Network>(Outgoing, Incoming, Stats))
@@ -30,7 +30,7 @@ AudioBridge::Bridge::Bridge()
     NetworkThread.start(QThread::TimeCriticalPriority);
 }
 
-AudioBridge::Bridge::~Bridge()
+HIAudioStreamer::Bridge::~Bridge()
 {
     Mute.reset();
     Capture.reset();
@@ -42,7 +42,7 @@ AudioBridge::Bridge::~Bridge()
     NetworkThread.wait();
 }
 
-void AudioBridge::Bridge::Apply(const Config& config)
+void HIAudioStreamer::Bridge::Apply(const Config& config)
 {
     Current = config;
     Errors.clear();
@@ -78,7 +78,7 @@ void AudioBridge::Bridge::Apply(const Config& config)
         if (stream != nullptr && !stream->Error().isEmpty()) Errors.append(stream->Error());
 }
 
-void AudioBridge::Bridge::UpdateLocalMute()
+void HIAudioStreamer::Bridge::UpdateLocalMute()
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
     auto listened = false;
@@ -97,12 +97,12 @@ void AudioBridge::Bridge::UpdateLocalMute()
         Mute.reset();
 }
 
-void AudioBridge::Bridge::ReleaseLocalMute()
+void HIAudioStreamer::Bridge::ReleaseLocalMute()
 {
     Mute.reset();
 }
 
-void AudioBridge::Bridge::Mix(float* frames, std::size_t count, int rate)
+void HIAudioStreamer::Bridge::Mix(float* frames, std::size_t count, int rate)
 {
     for (auto done = std::size_t{0}; done < count; done += MixChunkFrames)
     {
@@ -115,7 +115,7 @@ void AudioBridge::Bridge::Mix(float* frames, std::size_t count, int rate)
     }
 }
 
-bool AudioBridge::Bridge::Active() const
+bool HIAudioStreamer::Bridge::Active() const
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
     auto receiving = false;
@@ -124,7 +124,7 @@ bool AudioBridge::Bridge::Active() const
     return receiving || (Current.Send && Stats.CaptureRate.load() > 0);
 }
 
-QString AudioBridge::Bridge::Status() const
+QString HIAudioStreamer::Bridge::Status() const
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
     auto lines = QStringList();
@@ -156,7 +156,7 @@ QString AudioBridge::Bridge::Status() const
     return lines.isEmpty() ? QStringLiteral("No connections") : lines.join(QLatin1Char('\n'));
 }
 
-QString AudioBridge::Bridge::Diagnostics()
+QString HIAudioStreamer::Bridge::Diagnostics()
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
     auto line = QStringLiteral("send %1 local %2 capture %3 Hz peak %4 sent %5 rejected %6")
@@ -182,21 +182,21 @@ QString AudioBridge::Bridge::Diagnostics()
     return line + (Errors.isEmpty() ? QString() : QStringLiteral(" | errors: ") + Errors.join("; "));
 }
 
-void AudioBridge::Bridge::StartPairing(const QString& address)
+void HIAudioStreamer::Bridge::StartPairing(const QString& address)
 {
     auto* network = NetworkObject.get();
     QMetaObject::invokeMethod(network, [network, address] { network->StartPairing(address); },
         Qt::QueuedConnection);
 }
 
-void AudioBridge::Bridge::ConfirmPairing(const QString& code)
+void HIAudioStreamer::Bridge::ConfirmPairing(const QString& code)
 {
     auto* network = NetworkObject.get();
     QMetaObject::invokeMethod(network, [network, code] { network->ConfirmPairing(code); },
         Qt::QueuedConnection);
 }
 
-void AudioBridge::Bridge::CancelPairing()
+void HIAudioStreamer::Bridge::CancelPairing()
 {
     auto* network = NetworkObject.get();
     QMetaObject::invokeMethod(network, [network] { network->CancelPairing(); },

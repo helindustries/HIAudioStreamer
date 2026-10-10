@@ -13,7 +13,7 @@
 #include <memory>
 #include <vector>
 
-namespace AudioBridge
+namespace HIAudioStreamer
 {
     // Owns the audio streams and the network thread, and rebuilds the streams whenever the
     // configuration changes. Every paired peer has a fixed Playout slot, and whatever arrives
@@ -50,7 +50,7 @@ namespace AudioBridge
         // Forwarded from Network, which lives on another thread.
         void PairingCodeShown(const QString& name, const QString& address, const QString& code);
         void PairingCodeNeeded(const QString& name, const QString& address);
-        void Paired(const AudioBridge::Peer& peer);
+        void Paired(const HIAudioStreamer::Peer& peer);
         void PairingFailed(const QString& message);
         void Failed(const QString& message);
 
@@ -68,4 +68,4 @@ namespace AudioBridge
         std::unique_ptr<LocalMute> Mute;
         Config Current;
     };
-} // namespace AudioBridge
+} // namespace HIAudioStreamer

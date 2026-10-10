@@ -21,13 +21,13 @@ namespace
     }
 } // namespace
 
-void AudioBridge::Playout::Push(const float* frames, std::size_t count, int sampleRate)
+void HIAudioStreamer::Playout::Push(const float* frames, std::size_t count, int sampleRate)
 {
     StreamRate.store(sampleRate, std::memory_order_relaxed);
     Ring.Write(frames, count);
 }
 
-void AudioBridge::Playout::MixInto(float* frames, std::size_t count, int outputRate)
+void HIAudioStreamer::Playout::MixInto(float* frames, std::size_t count, int outputRate)
 {
     const auto streamRate = StreamRate.load(std::memory_order_relaxed);
     const auto target = TargetMs.load(std::memory_order_relaxed) * streamRate / 1000.0;

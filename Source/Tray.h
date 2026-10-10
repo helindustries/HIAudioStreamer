@@ -12,7 +12,7 @@
 
 #include <vector>
 
-namespace AudioBridge
+namespace HIAudioStreamer
 {
     // The whole user interface: a tray icon on Windows, a menu bar item on macOS. Every change
     // is saved at once and applied by restarting the audio streams.
@@ -32,7 +32,7 @@ namespace AudioBridge
         void AddConnection();
         void HandleCodeNeeded(const QString& name, const QString& address);
         void HandleCodeShown(const QString& name, const QString& address, const QString& code);
-        void HandlePaired(const AudioBridge::Peer& peer);
+        void HandlePaired(const HIAudioStreamer::Peer& peer);
         void HandlePairingFailed(const QString& message);
         void CloseCodeBox();
 
@@ -53,4 +53,4 @@ namespace AudioBridge
         QString DefaultOutput;
         int TicksSinceDiagnostics = 0;
     };
-} // namespace AudioBridge
+} // namespace HIAudioStreamer

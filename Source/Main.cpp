@@ -14,29 +14,32 @@ int main(int argc, char* argv[])
     auto application = QApplication(argc, argv);
     QApplication::setOrganizationName(QStringLiteral("Hel Industries"));
     QApplication::setOrganizationDomain(QStringLiteral("helindustries.com"));
-    QApplication::setApplicationName(QStringLiteral("AudioBridge"));
+    QApplication::setApplicationName(QStringLiteral("HIAudioStreamer"));
     QApplication::setQuitOnLastWindowClosed(false);
-    qRegisterMetaType<AudioBridge::Peer>();
-    qRegisterMetaType<AudioBridge::Config>();
+    qRegisterMetaType<HIAudioStreamer::Peer>();
+    qRegisterMetaType<HIAudioStreamer::Config>();
 
     // One instance per user: a second would fight the first for the port and for the mute.
     // QLockFile notices a lock left by a crashed run and takes it over.
     auto lock = QLockFile(QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
-                              .filePath(QStringLiteral("AudioBridge.lock")));
+                              .filePath(QStringLiteral("HIAudioStreamer.lock")));
     // A second instance simply ends: the first one already sits in the tray.
     auto result = 0;
     if (lock.tryLock(0))
     {
-        if (QSystemTrayIcon::isSystemTrayAvailable())
+        // Run by the installer after it had to stop a running copy, which had no chance to unmute.
+        if (QApplication::arguments().contains(QStringLiteral("--restore-output")))
+            HIAudioStreamer::RestoreLocalOutput();
+        else if (QSystemTrayIcon::isSystemTrayAvailable())
         {
-            AudioBridge::RestoreLocalOutput();
-            auto tray = AudioBridge::Tray();
+            HIAudioStreamer::RestoreLocalOutput();
+            auto tray = HIAudioStreamer::Tray();
             result = QApplication::exec();
         }
         else
         {
-            QMessageBox::critical(nullptr, QStringLiteral("AudioBridge"),
-                QStringLiteral("There is no system tray to put AudioBridge in."));
+            QMessageBox::critical(nullptr, QStringLiteral("HIAudioStreamer"),
+                QStringLiteral("There is no system tray to put HIAudioStreamer in."));
             result = 1;
         }
     }

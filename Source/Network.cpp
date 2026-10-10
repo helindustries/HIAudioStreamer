@@ -31,13 +31,13 @@ namespace
     constexpr auto AskingTimeoutMs = 15000;
     constexpr auto AskedTimeoutMs = 120000;
     constexpr auto MessageHeaderSize = 5;
-    constexpr auto AudioHeaderSize = MessageHeaderSize + AudioBridge::KeyIdSize;
+    constexpr auto AudioHeaderSize = MessageHeaderSize + HIAudioStreamer::KeyIdSize;
     constexpr auto AudioPlainHeaderSize = 8;
 
-    QByteArray MessageHeader(AudioBridge::MessageType type)
+    QByteArray MessageHeader(HIAudioStreamer::MessageType type)
     {
         auto header = QByteArray(MessageHeaderSize, '\0');
-        qToLittleEndian<quint32>(AudioBridge::Magic, header.data());
+        qToLittleEndian<quint32>(HIAudioStreamer::Magic, header.data());
         header[4] = static_cast<char>(type);
         return header;
     }
@@ -63,7 +63,7 @@ namespace
 
     int PacketFrames(int rate)
     {
-        return std::clamp(rate * PacketMs / 1000, 1, AudioBridge::MaxPacketFrames);
+        return std::clamp(rate * PacketMs / 1000, 1, HIAudioStreamer::MaxPacketFrames);
     }
 
     bool SameHost(const QHostAddress& a, const QHostAddress& b)
@@ -74,11 +74,11 @@ namespace
     QString AddressText(const QHostAddress& address, quint16 port)
     {
         const auto host = QHostAddress(address.toIPv4Address()).toString();
-        return port == AudioBridge::DefaultPort ? host : QStringLiteral("%1:%2").arg(host).arg(port);
+        return port == HIAudioStreamer::DefaultPort ? host : QStringLiteral("%1:%2").arg(host).arg(port);
     }
 } // namespace
 
-AudioBridge::Network::Network(RingBuffer& outgoing, std::vector<std::unique_ptr<Playout>>& incoming,
+HIAudioStreamer::Network::Network(RingBuffer& outgoing, std::vector<std::unique_ptr<Playout>>& incoming,
     LinkStats& stats)
     : Outgoing(outgoing)
     , Incoming(incoming)
@@ -99,7 +99,7 @@ AudioBridge::Network::Network(RingBuffer& outgoing, std::vector<std::unique_ptr<
     connect(&Heartbeat, &QTimer::timeout, this, &Network::SendHeartbeats);
     connect(&AskingTimeout, &QTimer::timeout, this, [this] {
         Asking.Active = false;
-        emit PairingFailed(QStringLiteral("No answer from %1. Is AudioBridge running there?")
+        emit PairingFailed(QStringLiteral("No answer from %1. Is HIAudioStreamer running there?")
                                .arg(Asking.Entered));
     });
     connect(&AskedTimeout, &QTimer::timeout, this, [this] {
@@ -109,19 +109,19 @@ AudioBridge::Network::Network(RingBuffer& outgoing, std::vector<std::unique_ptr<
     Sender = std::thread([this] { SendLoop(); });
 }
 
-AudioBridge::Network::~Network()
+HIAudioStreamer::Network::~Network()
 {
     StopSending = true;
     Wake.release();
     if (Sender.joinable()) Sender.join();
 }
 
-void AudioBridge::Network::NotifyCaptured(int rate)
+void HIAudioStreamer::Network::NotifyCaptured(int rate)
 {
     if (Outgoing.Available() >= static_cast<std::size_t>(PacketFrames(rate))) Wake.release();
 }
 
-void AudioBridge::Network::Configure(const AudioBridge::Config& config)
+void HIAudioStreamer::Network::Configure(const HIAudioStreamer::Config& config)
 {
     Current = config;
     OwnKeyId = KeyId(config.Self.Public);
@@ -157,7 +157,7 @@ void AudioBridge::Network::Configure(const AudioBridge::Config& config)
     SendHeartbeats();
 }
 
-int AudioBridge::Network::SlotFor(const QByteArray& keyId) const
+int HIAudioStreamer::Network::SlotFor(const QByteArray& keyId) const
 {
     auto slot = -1;
     for (auto i = 0; i < std::min<int>(MaxPeers, static_cast<int>(Remotes.size())) && slot < 0; ++i)
@@ -167,7 +167,7 @@ int AudioBridge::Network::SlotFor(const QByteArray& keyId) const
 
 // Sent whether or not anything plays, to every peer: it says this side is up and would play,
 // which is all the sender needs to decide whether to silence its own output.
-void AudioBridge::Network::SendHeartbeats()
+void HIAudioStreamer::Network::SendHeartbeats()
 {
     const auto header = MessageHeader(MessageType::Listening) + OwnKeyId;
     for (const auto& remote : Remotes)
@@ -179,7 +179,7 @@ void AudioBridge::Network::SendHeartbeats()
         }
 }
 
-void AudioBridge::Network::HandleListening(const QByteArray& header, const QByteArray& body)
+void HIAudioStreamer::Network::HandleListening(const QByteArray& header, const QByteArray& body)
 {
     const auto slot = SlotFor(header.mid(MessageHeaderSize));
     if (slot >= 0 && body.size() == NonceSize + MacSize
@@ -190,7 +190,7 @@ void AudioBridge::Network::HandleListening(const QByteArray& header, const QByte
         Stats.PacketsRejected.fetch_add(1, std::memory_order_relaxed);
 }
 
-void AudioBridge::Network::StartPairing(const QString& address)
+void HIAudioStreamer::Network::StartPairing(const QString& address)
 {
     const auto [host, port] = ParseAddress(address, Current.Port);
     if (host.isNull())
@@ -207,7 +207,7 @@ void AudioBridge::Network::StartPairing(const QString& address)
     }
 }
 
-void AudioBridge::Network::ConfirmPairing(const QString& code)
+void HIAudioStreamer::Network::ConfirmPairing(const QString& code)
 {
     if (Asking.Active && !Asking.Code.isEmpty())
     {
@@ -224,7 +224,7 @@ void AudioBridge::Network::ConfirmPairing(const QString& code)
     }
 }
 
-void AudioBridge::Network::CancelPairing()
+void HIAudioStreamer::Network::CancelPairing()
 {
     Asking.Active = false;
     Asked.Active = false;
@@ -232,7 +232,7 @@ void AudioBridge::Network::CancelPairing()
     AskedTimeout.stop();
 }
 
-void AudioBridge::Network::Shutdown()
+void HIAudioStreamer::Network::Shutdown()
 {
     StopSending = true;
     Wake.release();
@@ -243,7 +243,7 @@ void AudioBridge::Network::Shutdown()
     Socket.close();
 }
 
-void AudioBridge::Network::SendHello(MessageType type, const QHostAddress& to, quint16 port)
+void HIAudioStreamer::Network::SendHello(MessageType type, const QHostAddress& to, quint16 port)
 {
     const auto name = Current.Name.toUtf8().left(MaxNameBytes);
     auto datagram = MessageHeader(type) + Current.Self.Public;
@@ -252,7 +252,7 @@ void AudioBridge::Network::SendHello(MessageType type, const QHostAddress& to, q
     Socket.writeDatagram(datagram, to, port);
 }
 
-void AudioBridge::Network::HandleReadyRead()
+void HIAudioStreamer::Network::HandleReadyRead()
 {
     while (Socket.hasPendingDatagrams())
     {
@@ -288,7 +288,7 @@ void AudioBridge::Network::HandleReadyRead()
     }
 }
 
-void AudioBridge::Network::HandlePairRequest(const QByteArray& body, const QHostAddress& from,
+void HIAudioStreamer::Network::HandlePairRequest(const QByteArray& body, const QHostAddress& from,
     quint16 port)
 {
     const auto nameSize = body.size() > KeySize ? static_cast<quint8>(body[KeySize]) : 0;
@@ -309,7 +309,7 @@ void AudioBridge::Network::HandlePairRequest(const QByteArray& body, const QHost
     }
 }
 
-void AudioBridge::Network::HandlePairResponse(const QByteArray& body, const QHostAddress& from,
+void HIAudioStreamer::Network::HandlePairResponse(const QByteArray& body, const QHostAddress& from,
     quint16 port)
 {
     const auto nameSize = body.size() > KeySize ? static_cast<quint8>(body[KeySize]) : 0;
@@ -326,7 +326,7 @@ void AudioBridge::Network::HandlePairResponse(const QByteArray& body, const QHos
     }
 }
 
-void AudioBridge::Network::HandlePairConfirm(const QByteArray& body, const QHostAddress& from)
+void HIAudioStreamer::Network::HandlePairConfirm(const QByteArray& body, const QHostAddress& from)
 {
     if (Asked.Active && SameHost(from, Asked.Address) && body.size() == KeyIdSize + MacSize
         && body.left(KeyIdSize) == KeyId(Asked.PublicKey))
@@ -343,7 +343,7 @@ void AudioBridge::Network::HandlePairConfirm(const QByteArray& body, const QHost
     }
 }
 
-void AudioBridge::Network::HandleAudio(const QByteArray& header, const QByteArray& body)
+void HIAudioStreamer::Network::HandleAudio(const QByteArray& header, const QByteArray& body)
 {
     const auto slot = SlotFor(header.mid(MessageHeaderSize));
 
@@ -389,7 +389,7 @@ void AudioBridge::Network::HandleAudio(const QByteArray& header, const QByteArra
         Stats.PacketsRejected.fetch_add(1, std::memory_order_relaxed);
 }
 
-void AudioBridge::Network::SendLoop()
+void HIAudioStreamer::Network::SendLoop()
 {
     // Its own socket, created on this thread: QUdpSocket may not be shared across threads, and a
     // plain write needs no event loop. It sends from an ephemeral port, which nothing checks;
@@ -401,7 +401,7 @@ void AudioBridge::Network::SendLoop()
     }
 }
 
-void AudioBridge::Network::SendPending(QUdpSocket& socket)
+void HIAudioStreamer::Network::SendPending(QUdpSocket& socket)
 {
     const auto rate = Stats.CaptureRate.load(std::memory_order_relaxed);
     const auto packetFrames = PacketFrames(rate);

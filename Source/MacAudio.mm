@@ -25,7 +25,7 @@ namespace
 
     // Owns whatever a stream set up and tears it down in reverse. The IOProc is stopped before
     // anything it reads from goes away.
-    class CoreAudioStream final : public AudioBridge::AudioStream
+    class CoreAudioStream final : public HIAudioStreamer::AudioStream
     {
     public:
         ~CoreAudioStream() override
@@ -145,7 +145,7 @@ namespace
         return found;
     }
 
-    void StartInput(CoreAudioStream& stream, int firstChannel, AudioBridge::CaptureCallback callback)
+    void StartInput(CoreAudioStream& stream, int firstChannel, HIAudioStreamer::CaptureCallback callback)
     {
         const auto rate = NominalRate(stream.Device);
         auto* target = &stream;
@@ -170,7 +170,7 @@ namespace
         if (status != noErr) stream.Failure = Describe("Starting audio capture", status);
     }
 
-    void StartOutput(CoreAudioStream& stream, AudioBridge::RenderCallback callback)
+    void StartOutput(CoreAudioStream& stream, HIAudioStreamer::RenderCallback callback)
     {
         const auto rate = NominalRate(stream.Device);
         auto* target = &stream;
@@ -197,11 +197,11 @@ namespace
         if (status != noErr) stream.Failure = Describe("Starting audio output", status);
     }
 
-    QList<AudioBridge::DeviceInfo> Devices(AudioObjectPropertyScope scope)
+    QList<HIAudioStreamer::DeviceInfo> Devices(AudioObjectPropertyScope scope)
     {
         auto address = Address(kAudioHardwarePropertyDevices);
         auto size = UInt32{0};
-        auto devices = QList<AudioBridge::DeviceInfo>();
+        auto devices = QList<HIAudioStreamer::DeviceInfo>();
         if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &address, 0, nullptr, &size)
             == noErr)
         {
@@ -218,7 +218,7 @@ namespace
     }
 } // namespace
 
-std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartSystemCapture(CaptureCallback callback)
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartSystemCapture(CaptureCallback callback)
 {
     auto stream = std::make_unique<CoreAudioStream>();
     if (@available(macOS 14.2, *))
@@ -235,7 +235,7 @@ std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartSystemCapture(Captur
         auto* excluded = process != kAudioObjectUnknown ? @[ @(process) ] : @[];
         auto* description =
             [[CATapDescription alloc] initStereoGlobalTapButExcludeProcesses:excluded];
-        description.name = @"AudioBridge";
+        description.name = @"HIAudioStreamer";
         description.privateTap = YES;
         description.muteBehavior = CATapUnmuted;
         auto status = AudioHardwareCreateProcessTap(description, &stream->Tap);
@@ -247,7 +247,7 @@ std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartSystemCapture(Captur
         if (status == noErr)
         {
             auto* aggregate = @{
-                @kAudioAggregateDeviceNameKey: @"AudioBridge System Audio",
+                @kAudioAggregateDeviceNameKey: @"HIAudioStreamer System Audio",
                 @kAudioAggregateDeviceUIDKey: [[NSUUID UUID] UUIDString],
                 @kAudioAggregateDeviceMainSubDeviceKey: outputUid,
                 @kAudioAggregateDeviceIsPrivateKey: @YES,
@@ -276,7 +276,7 @@ std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartSystemCapture(Captur
     return stream;
 }
 
-std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartDeviceCapture(const QString& deviceId,
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartDeviceCapture(const QString& deviceId,
     CaptureCallback callback)
 {
     auto stream = std::make_unique<CoreAudioStream>();
@@ -288,7 +288,7 @@ std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartDeviceCapture(const 
     return stream;
 }
 
-std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartRender(const QString& deviceId,
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartRender(const QString& deviceId,
     RenderCallback callback)
 {
     auto stream = std::make_unique<CoreAudioStream>();
@@ -300,17 +300,17 @@ std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartRender(const QString
     return stream;
 }
 
-QList<AudioBridge::DeviceInfo> AudioBridge::InputDevices()
+QList<HIAudioStreamer::DeviceInfo> HIAudioStreamer::InputDevices()
 {
     return Devices(kAudioObjectPropertyScopeInput);
 }
 
-QList<AudioBridge::DeviceInfo> AudioBridge::OutputDevices()
+QList<HIAudioStreamer::DeviceInfo> HIAudioStreamer::OutputDevices()
 {
     return Devices(kAudioObjectPropertyScopeOutput);
 }
 
-QString AudioBridge::DefaultOutputId()
+QString HIAudioStreamer::DefaultOutputId()
 {
     return StringProperty(DefaultDevice(false), kAudioDevicePropertyDeviceUID);
 }
@@ -320,7 +320,7 @@ namespace
     // A second, muting tap that nothing reads: while it exists every process but this one is
     // silent on the outputs, and the capturing tap still hears them. The tap belongs to this
     // process, so the system removes it - and the mute with it - however the process ends.
-    class TapMute final : public AudioBridge::LocalMute
+    class TapMute final : public HIAudioStreamer::LocalMute
     {
     public:
         TapMute()
@@ -336,7 +336,7 @@ namespace
                 auto* excluded = process != kAudioObjectUnknown ? @[ @(process) ] : @[];
                 auto* description =
                     [[CATapDescription alloc] initStereoGlobalTapButExcludeProcesses:excluded];
-                description.name = @"AudioBridge mute";
+                description.name = @"HIAudioStreamer mute";
                 description.privateTap = YES;
                 description.muteBehavior = CATapMuted;
                 const auto status = AudioHardwareCreateProcessTap(description, &Tap);
@@ -359,11 +359,11 @@ namespace
     };
 } // namespace
 
-std::unique_ptr<AudioBridge::LocalMute> AudioBridge::MuteLocalOutput()
+std::unique_ptr<HIAudioStreamer::LocalMute> HIAudioStreamer::MuteLocalOutput()
 {
     return std::make_unique<TapMute>();
 }
 
-void AudioBridge::RestoreLocalOutput()
+void HIAudioStreamer::RestoreLocalOutput()
 {
 }

@@ -7,7 +7,7 @@
 #include <QtCore/QMetaType>
 #include <QtCore/QString>
 
-namespace AudioBridge
+namespace HIAudioStreamer
 {
     // A paired machine. Address is entered by hand ("192.168.1.4" or "192.168.1.4:49710"); the
     // key is what lets its packets in, so an address on its own admits nothing.
@@ -26,7 +26,7 @@ namespace AudioBridge
         QString Name;
         quint16 Port = DefaultPort;
         bool Send = true;
-        // Empty means this machine's own output, everything but AudioBridge itself.
+        // Empty means this machine's own output, everything but HIAudioStreamer itself.
         QString Source;
         // Empty means the system default output.
         QString Output;
@@ -36,7 +36,7 @@ namespace AudioBridge
 
     [[nodiscard]] Config LoadConfig();
     void SaveConfig(const Config& config);
-} // namespace AudioBridge
+} // namespace HIAudioStreamer
 
-Q_DECLARE_METATYPE(AudioBridge::Peer)
-Q_DECLARE_METATYPE(AudioBridge::Config)
+Q_DECLARE_METATYPE(HIAudioStreamer::Peer)
+Q_DECLARE_METATYPE(HIAudioStreamer::Config)

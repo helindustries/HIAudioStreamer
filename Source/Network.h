@@ -19,7 +19,7 @@
 #include <thread>
 #include <vector>
 
-namespace AudioBridge
+namespace HIAudioStreamer
 {
     struct LinkStats
     {
@@ -66,7 +66,7 @@ namespace AudioBridge
         // Real-time safe: called from the capture callback after it wrote to the outgoing ring.
         void NotifyCaptured(int rate);
 
-        void Configure(const AudioBridge::Config& config);
+        void Configure(const HIAudioStreamer::Config& config);
         void StartPairing(const QString& address);
         void ConfirmPairing(const QString& code);
         void CancelPairing();
@@ -76,7 +76,7 @@ namespace AudioBridge
         // Shown on the machine that was asked; typed in on the one that asked.
         void PairingCodeShown(const QString& name, const QString& address, const QString& code);
         void PairingCodeNeeded(const QString& name, const QString& address);
-        void Paired(const AudioBridge::Peer& peer);
+        void Paired(const HIAudioStreamer::Peer& peer);
         void PairingFailed(const QString& message);
         void Failed(const QString& message);
 
@@ -130,7 +130,7 @@ namespace AudioBridge
         QTimer AskingTimeout;
         QTimer AskedTimeout;
         QTimer Heartbeat;
-        AudioBridge::Config Current;
+        HIAudioStreamer::Config Current;
         QByteArray OwnKeyId;
         std::vector<Remote> Remotes;
         Pending Asked;
@@ -152,4 +152,4 @@ namespace AudioBridge
         std::atomic<bool> StopSending{false};
         std::thread Sender;
     };
-} // namespace AudioBridge
+} // namespace HIAudioStreamer

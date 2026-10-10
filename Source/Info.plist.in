@@ -7,7 +7,7 @@
     <key>CFBundleIdentifier</key>
     <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
     <key>CFBundleName</key>
-    <string>AudioBridge</string>
+    <string>HIAudioStreamer</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -21,8 +21,10 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>AudioBridge sends what this Mac plays to the machines you have paired it with.</string>
+    <string>HIAudioStreamer sends what this Mac plays to the machines you have paired it with.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>HIAudioStreamer sends and receives audio with the machines you pair it with on your network.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>AudioBridge sends the input you choose to the machines you have paired it with.</string>
+    <string>HIAudioStreamer sends the input you choose to the machines you have paired it with.</string>
 </dict>
 </plist>

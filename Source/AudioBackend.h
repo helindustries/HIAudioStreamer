@@ -7,7 +7,7 @@
 #include <functional>
 #include <memory>
 
-namespace AudioBridge
+namespace HIAudioStreamer
 {
     struct DeviceInfo
     {
@@ -29,7 +29,7 @@ namespace AudioBridge
         [[nodiscard]] virtual QString Error() const = 0;
     };
 
-    // Everything this machine plays except AudioBridge's own output, so two machines sending
+    // Everything this machine plays except HIAudioStreamer's own output, so two machines sending
     // each other their system audio do not feed back.
     [[nodiscard]] std::unique_ptr<AudioStream> StartSystemCapture(CaptureCallback callback);
     [[nodiscard]] std::unique_ptr<AudioStream> StartDeviceCapture(const QString& deviceId,
@@ -44,7 +44,7 @@ namespace AudioBridge
     [[nodiscard]] QString DefaultOutputId();
 
     // Silences this machine's own output for as long as it exists, without silencing what the
-    // system capture hears or what AudioBridge itself plays; destroying it restores the output.
+    // system capture hears or what HIAudioStreamer itself plays; destroying it restores the output.
     class LocalMute
     {
     public:
@@ -55,4 +55,4 @@ namespace AudioBridge
     [[nodiscard]] std::unique_ptr<LocalMute> MuteLocalOutput();
     // Undoes a mute left behind by a run that ended without destroying its LocalMute.
     void RestoreLocalOutput();
-} // namespace AudioBridge
+} // namespace HIAudioStreamer

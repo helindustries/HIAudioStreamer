@@ -3,10 +3,10 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace AudioBridge
+namespace HIAudioStreamer
 {
     static constexpr auto DefaultPort = std::uint16_t{49710};
-    static constexpr auto Magic = std::uint32_t{0x31474241};
+    static constexpr auto Magic = std::uint32_t{0x31414948};
     static constexpr auto Channels = 2;
     static constexpr auto MaxPacketFrames = 480;
     static constexpr auto MaxPeers = 8;
@@ -32,4 +32,4 @@ namespace AudioBridge
     };
     static constexpr auto HeartbeatMs = 500;
     static constexpr auto ListeningTimeoutMs = 2000;
-} // namespace AudioBridge
+} // namespace HIAudioStreamer

@@ -5,7 +5,7 @@
 
 #include <optional>
 
-namespace AudioBridge
+namespace HIAudioStreamer
 {
     // A machine's long-term X25519 key pair, created on first start and kept in the settings.
     struct Identity
@@ -36,4 +36,4 @@ namespace AudioBridge
         const QByteArray& associated, const QByteArray& plain);
     [[nodiscard]] std::optional<QByteArray> Open(const QByteArray& key, const QByteArray& nonce,
         const QByteArray& associated, const QByteArray& sealed);
-} // namespace AudioBridge
+} // namespace HIAudioStreamer

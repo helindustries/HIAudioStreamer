@@ -6,7 +6,7 @@
 #include <atomic>
 #include <cstddef>
 
-namespace AudioBridge
+namespace HIAudioStreamer
 {
     // Sits between the network and the output device for one peer. It holds TargetMs of audio
     // against network jitter and plays it out at whatever rate the device runs, resampling as it
@@ -37,4 +37,4 @@ namespace AudioBridge
         double SmoothedFill = 0.0;
         std::array<std::array<float, 2>, 4> History{};
     };
-} // namespace AudioBridge
+} // namespace HIAudioStreamer

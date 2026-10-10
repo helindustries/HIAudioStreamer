@@ -22,7 +22,7 @@ namespace
     constexpr auto BufferChoicesMs = std::array{20, 40, 80, 150};
     constexpr auto IconSize = 64;
     constexpr auto MessageMs = 5000;
-    constexpr auto Title = "AudioBridge";
+    constexpr auto Title = "HIAudioStreamer";
     constexpr auto DiagnosticsEveryTicks = 10;
     constexpr auto MaxLogBytes = 1024 * 1024;
 
@@ -77,7 +77,7 @@ namespace
     }
 } // namespace
 
-AudioBridge::Tray::Tray()
+HIAudioStreamer::Tray::Tray()
     : Current(LoadConfig())
 {
     SaveConfig(Current);
@@ -98,7 +98,7 @@ AudioBridge::Tray::Tray()
     AutostartAction = Menu.addAction(QStringLiteral("Start at Login"));
     AutostartAction->setCheckable(true);
     Menu.addSeparator();
-    auto* quit = Menu.addAction(QStringLiteral("Quit AudioBridge"));
+    auto* quit = Menu.addAction(QStringLiteral("Quit HIAudioStreamer"));
 
     connect(SendAction, &QAction::triggered, this, [this](bool on) {
         Current.Send = on;
@@ -142,7 +142,7 @@ AudioBridge::Tray::Tray()
             QSystemTrayIcon::Information, MessageMs);
 }
 
-void AudioBridge::Tray::Commit()
+void HIAudioStreamer::Tray::Commit()
 {
     SaveConfig(Current);
     Link.Apply(Current);
@@ -153,7 +153,7 @@ void AudioBridge::Tray::Commit()
 // Neither OS moves a running stream when the default output changes, so "System Default" has
 // to be followed by hand. On macOS the system tap is clocked by the default output as well,
 // which is why both streams restart rather than only the playback.
-void AudioBridge::Tray::FollowDefaultOutput()
+void HIAudioStreamer::Tray::FollowDefaultOutput()
 {
     const auto current = DefaultOutputId();
     if (current != DefaultOutput && !current.isEmpty())
@@ -164,11 +164,11 @@ void AudioBridge::Tray::FollowDefaultOutput()
     }
 }
 
-void AudioBridge::Tray::WriteDiagnostics(const QString& line)
+void HIAudioStreamer::Tray::WriteDiagnostics(const QString& line)
 {
     const auto folder = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     QDir().mkpath(folder);
-    auto file = QFile(folder + QStringLiteral("/AudioBridge.log"));
+    auto file = QFile(folder + QStringLiteral("/HIAudioStreamer.log"));
     const auto mode = file.size() > MaxLogBytes ? QIODevice::WriteOnly | QIODevice::Truncate
                                                 : QIODevice::WriteOnly | QIODevice::Append;
     if (file.open(mode))
@@ -177,7 +177,7 @@ void AudioBridge::Tray::WriteDiagnostics(const QString& line)
                        .toUtf8());
 }
 
-void AudioBridge::Tray::RefreshStatus()
+void HIAudioStreamer::Tray::RefreshStatus()
 {
     FollowDefaultOutput();
     Link.UpdateLocalMute();
@@ -202,7 +202,7 @@ void AudioBridge::Tray::RefreshStatus()
     }
 }
 
-void AudioBridge::Tray::RefreshMenus()
+void HIAudioStreamer::Tray::RefreshMenus()
 {
     SendAction->setChecked(Current.Send);
     AutostartAction->setChecked(AutostartEnabled());
@@ -280,11 +280,11 @@ void AudioBridge::Tray::RefreshMenus()
     connect(add, &QAction::triggered, this, &Tray::AddConnection);
 }
 
-void AudioBridge::Tray::AddConnection()
+void HIAudioStreamer::Tray::AddConnection()
 {
     auto accepted = false;
     const auto address = AskText(QStringLiteral("IP address of the other machine, optionally "
-                                                "with :port.\nAudioBridge must be running there."),
+                                                "with :port.\nHIAudioStreamer must be running there."),
         QString(), accepted);
     if (accepted && !address.isEmpty())
     {
@@ -295,7 +295,7 @@ void AudioBridge::Tray::AddConnection()
     }
 }
 
-void AudioBridge::Tray::HandleCodeNeeded(const QString& name, const QString& address)
+void HIAudioStreamer::Tray::HandleCodeNeeded(const QString& name, const QString& address)
 {
     auto accepted = false;
     const auto code = AskText(QStringLiteral("Enter the 4-digit code that %1 (%2) is showing.")
@@ -307,7 +307,7 @@ void AudioBridge::Tray::HandleCodeNeeded(const QString& name, const QString& add
         Link.CancelPairing();
 }
 
-void AudioBridge::Tray::HandleCodeShown(const QString& name, const QString& address,
+void HIAudioStreamer::Tray::HandleCodeShown(const QString& name, const QString& address,
     const QString& code)
 {
     CloseCodeBox();
@@ -320,7 +320,7 @@ void AudioBridge::Tray::HandleCodeShown(const QString& name, const QString& addr
     BringForward(*CodeBox);
 }
 
-void AudioBridge::Tray::CloseCodeBox()
+void HIAudioStreamer::Tray::CloseCodeBox()
 {
     if (CodeBox != nullptr)
     {
@@ -329,7 +329,7 @@ void AudioBridge::Tray::CloseCodeBox()
     }
 }
 
-void AudioBridge::Tray::HandlePaired(const AudioBridge::Peer& peer)
+void HIAudioStreamer::Tray::HandlePaired(const HIAudioStreamer::Peer& peer)
 {
     CloseCodeBox();
     // Pairing again with a known machine replaces it rather than listing it twice.
@@ -346,7 +346,7 @@ void AudioBridge::Tray::HandlePaired(const AudioBridge::Peer& peer)
         QSystemTrayIcon::Information, MessageMs);
 }
 
-void AudioBridge::Tray::HandlePairingFailed(const QString& message)
+void HIAudioStreamer::Tray::HandlePairingFailed(const QString& message)
 {
     CloseCodeBox();
     Icon.showMessage(QString::fromUtf8(Title), message, QSystemTrayIcon::Warning, MessageMs);

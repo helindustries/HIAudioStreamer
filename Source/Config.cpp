@@ -3,7 +3,7 @@
 #include <QtCore/QSettings>
 #include <QtCore/QSysInfo>
 
-AudioBridge::Config AudioBridge::LoadConfig()
+HIAudioStreamer::Config HIAudioStreamer::LoadConfig()
 {
     auto settings = QSettings();
     auto config = Config();
@@ -37,7 +37,7 @@ AudioBridge::Config AudioBridge::LoadConfig()
     return config;
 }
 
-void AudioBridge::SaveConfig(const Config& config)
+void HIAudioStreamer::SaveConfig(const Config& config)
 {
     auto settings = QSettings();
     settings.setValue("Identity", config.Self.Secret.toBase64());

@@ -9,9 +9,9 @@ namespace
 {
 #ifdef Q_OS_WIN
     constexpr auto RunKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-    constexpr auto RunValue = "AudioBridge";
+    constexpr auto RunValue = "HIAudioStreamer";
 #else
-    constexpr auto AgentLabel = "com.helindustries.audiobridge";
+    constexpr auto AgentLabel = "com.helindustries.hiaudiostreamer";
 
     QString AgentPath()
     {
@@ -37,7 +37,7 @@ namespace
 #endif
 } // namespace
 
-bool AudioBridge::AutostartEnabled()
+bool HIAudioStreamer::AutostartEnabled()
 {
 #ifdef Q_OS_WIN
     return QSettings(RunKey, QSettings::NativeFormat).contains(RunValue);
@@ -46,7 +46,7 @@ bool AudioBridge::AutostartEnabled()
 #endif
 }
 
-void AudioBridge::SetAutostart(bool enabled)
+void HIAudioStreamer::SetAutostart(bool enabled)
 {
 #ifdef Q_OS_WIN
     auto run = QSettings(RunKey, QSettings::NativeFormat);

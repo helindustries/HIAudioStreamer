@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace AudioBridge
+namespace HIAudioStreamer
 {
     // Single producer, single consumer, interleaved stereo float frames. One side is always a
     // real-time audio thread, so it takes no lock and allocates nothing after construction. The
@@ -70,4 +70,4 @@ namespace AudioBridge
         std::atomic<std::size_t> WriteIndex{0};
         std::atomic<std::size_t> ReadIndex{0};
     };
-} // namespace AudioBridge
+} // namespace HIAudioStreamer

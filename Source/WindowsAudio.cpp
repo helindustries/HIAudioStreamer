@@ -154,11 +154,11 @@ namespace
     // One thread per stream, event-driven. Setup happens on that thread, since WASAPI objects
     // belong to the apartment that created them, and the constructor waits until it is known
     // whether the stream started.
-    class WasapiStream final : public AudioBridge::AudioStream
+    class WasapiStream final : public HIAudioStreamer::AudioStream
     {
     public:
-        WasapiStream(Mode mode, QString deviceId, AudioBridge::CaptureCallback onCapture,
-            AudioBridge::RenderCallback onRender)
+        WasapiStream(Mode mode, QString deviceId, HIAudioStreamer::CaptureCallback onCapture,
+            HIAudioStreamer::RenderCallback onRender)
             : StreamMode(mode)
             , DeviceId(std::move(deviceId))
             , OnCapture(std::move(onCapture))
@@ -185,8 +185,8 @@ namespace
 
         Mode StreamMode;
         QString DeviceId;
-        AudioBridge::CaptureCallback OnCapture;
-        AudioBridge::RenderCallback OnRender;
+        HIAudioStreamer::CaptureCallback OnCapture;
+        HIAudioStreamer::RenderCallback OnRender;
         QString Failure;
         std::atomic<bool> Stopping{false};
         std::vector<float> Scratch = std::vector<float>(MaxFrames * 2);
@@ -288,9 +288,9 @@ namespace
         }
     }
 
-    QList<AudioBridge::DeviceInfo> Endpoints(EDataFlow flow)
+    QList<HIAudioStreamer::DeviceInfo> Endpoints(EDataFlow flow)
     {
-        auto devices = QList<AudioBridge::DeviceInfo>();
+        auto devices = QList<HIAudioStreamer::DeviceInfo>();
         auto enumerator = ComPtr<IMMDeviceEnumerator>();
         auto collection = ComPtr<IMMDeviceCollection>();
         auto count = UINT{0};
@@ -317,32 +317,32 @@ namespace
     }
 } // namespace
 
-std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartSystemCapture(CaptureCallback callback)
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartSystemCapture(CaptureCallback callback)
 {
     return std::make_unique<WasapiStream>(Mode::SystemCapture, QString(), std::move(callback),
         RenderCallback());
 }
 
-std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartDeviceCapture(const QString& deviceId,
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartDeviceCapture(const QString& deviceId,
     CaptureCallback callback)
 {
     return std::make_unique<WasapiStream>(Mode::DeviceCapture, deviceId, std::move(callback),
         RenderCallback());
 }
 
-std::unique_ptr<AudioBridge::AudioStream> AudioBridge::StartRender(const QString& deviceId,
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartRender(const QString& deviceId,
     RenderCallback callback)
 {
     return std::make_unique<WasapiStream>(Mode::Render, deviceId, CaptureCallback(),
         std::move(callback));
 }
 
-QList<AudioBridge::DeviceInfo> AudioBridge::InputDevices()
+QList<HIAudioStreamer::DeviceInfo> HIAudioStreamer::InputDevices()
 {
     return Endpoints(eCapture);
 }
 
-QList<AudioBridge::DeviceInfo> AudioBridge::OutputDevices()
+QList<HIAudioStreamer::DeviceInfo> HIAudioStreamer::OutputDevices()
 {
     return Endpoints(eRender);
 }
@@ -377,7 +377,7 @@ namespace
     // before the endpoint applies its mute, so the capture still hears everything. The previous
     // state goes into the settings before muting, so a crash cannot leave the speakers muted
     // beyond the next start, which calls RestoreLocalOutput.
-    class EndpointMute final : public AudioBridge::LocalMute
+    class EndpointMute final : public HIAudioStreamer::LocalMute
     {
     public:
         EndpointMute()
@@ -415,12 +415,12 @@ namespace
     };
 } // namespace
 
-std::unique_ptr<AudioBridge::LocalMute> AudioBridge::MuteLocalOutput()
+std::unique_ptr<HIAudioStreamer::LocalMute> HIAudioStreamer::MuteLocalOutput()
 {
     return std::make_unique<EndpointMute>();
 }
 
-void AudioBridge::RestoreLocalOutput()
+void HIAudioStreamer::RestoreLocalOutput()
 {
     auto settings = QSettings();
     if (settings.contains(MuteDeviceKey))
@@ -432,7 +432,7 @@ void AudioBridge::RestoreLocalOutput()
     }
 }
 
-QString AudioBridge::DefaultOutputId()
+QString HIAudioStreamer::DefaultOutputId()
 {
     auto enumerator = ComPtr<IMMDeviceEnumerator>();
     auto device = ComPtr<IMMDevice>();
