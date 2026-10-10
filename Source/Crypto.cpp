@@ -13,6 +13,9 @@ namespace
     constexpr auto KeyContext = "HIAudioStreamer pairing v1";
     constexpr auto CodeContext = "HIAudioStreamer code";
     constexpr auto ConfirmContext = "HIAudioStreamer confirm";
+    constexpr auto CodeHashSize = 8;
+    constexpr auto CodeRange = 10000u;
+    constexpr auto CodeDigits = 4;
 
     const auto* Bytes(const QByteArray& data)
     {
@@ -28,7 +31,7 @@ namespace
     {
         auto hash = QByteArray(size, '\0');
         crypto_blake2b_keyed(Bytes(hash), hash.size(), Bytes(key), key.size(), Bytes(message),
-            message.size());
+                             message.size());
         return hash;
     }
 } // namespace
@@ -65,8 +68,7 @@ QByteArray HIAudioStreamer::SharedKey(const Identity& own, const QByteArray& pee
     auto raw = QByteArray(KeySize, '\0');
     crypto_x25519(Bytes(raw), Bytes(own.Secret), Bytes(peerPublic));
     // Ordering the two public keys makes the transcript, and so the key, the same on both sides.
-    const auto& low = std::min(own.Public, peerPublic);
-    const auto& high = std::max(own.Public, peerPublic);
+    const auto [low, high] = std::minmax(own.Public, peerPublic);
     const auto transcript = QByteArray(KeyContext) + raw + low + high;
     auto key = QByteArray(KeySize, '\0');
     crypto_blake2b(Bytes(key), key.size(), Bytes(transcript), transcript.size());
@@ -76,9 +78,9 @@ QByteArray HIAudioStreamer::SharedKey(const Identity& own, const QByteArray& pee
 
 QString HIAudioStreamer::PairingCode(const QByteArray& sharedKey)
 {
-    const auto hash = Keyed(sharedKey, QByteArray(CodeContext), 8);
-    const auto value = qFromLittleEndian<quint32>(hash.constData()) % 10000;
-    return QStringLiteral("%1").arg(value, 4, 10, QLatin1Char('0'));
+    const auto hash = Keyed(sharedKey, QByteArray(CodeContext), CodeHashSize);
+    const auto value = qFromLittleEndian<quint32>(hash.constData()) % CodeRange;
+    return QStringLiteral("%1").arg(value, CodeDigits, 10, QLatin1Char('0'));
 }
 
 QByteArray HIAudioStreamer::ConfirmTag(const QByteArray& sharedKey, const QByteArray& senderPublic)
@@ -86,26 +88,35 @@ QByteArray HIAudioStreamer::ConfirmTag(const QByteArray& sharedKey, const QByteA
     return Keyed(sharedKey, QByteArray(ConfirmContext) + senderPublic, MacSize);
 }
 
+bool HIAudioStreamer::ConfirmTagValid(const QByteArray& sharedKey, const QByteArray& senderPublic,
+                                      const QByteArray& tag)
+{
+    const auto expected = ConfirmTag(sharedKey, senderPublic);
+    return tag.size() == MacSize && crypto_verify16(Bytes(tag), Bytes(expected)) == 0;
+}
+
 QByteArray HIAudioStreamer::Seal(const QByteArray& key, const QByteArray& nonce,
-    const QByteArray& associated, const QByteArray& plain)
+                                 const QByteArray& associated, const QByteArray& plain)
 {
     auto sealed = QByteArray(MacSize + plain.size(), '\0');
     crypto_aead_lock(Bytes(sealed) + MacSize, Bytes(sealed), Bytes(key), Bytes(nonce),
-        Bytes(associated), associated.size(), Bytes(plain), plain.size());
+                     Bytes(associated), associated.size(), Bytes(plain), plain.size());
     return sealed;
 }
 
 std::optional<QByteArray> HIAudioStreamer::Open(const QByteArray& key, const QByteArray& nonce,
-    const QByteArray& associated, const QByteArray& sealed)
+                                                const QByteArray& associated,
+                                                const QByteArray& sealed)
 {
     auto plain = std::optional<QByteArray>();
     if (sealed.size() >= MacSize)
     {
-        auto text = QByteArray(sealed.size() - MacSize, '\0');
-        if (crypto_aead_unlock(Bytes(text), Bytes(sealed), Bytes(key), Bytes(nonce),
-                Bytes(associated), associated.size(), Bytes(sealed) + MacSize, text.size())
+        if (auto text = QByteArray(sealed.size() - MacSize, '\0');
+            crypto_aead_unlock(Bytes(text), Bytes(sealed), Bytes(key), Bytes(nonce),
+                               Bytes(associated), associated.size(), Bytes(sealed) + MacSize,
+                               text.size())
             == 0)
-            plain = text;
+            plain = std::move(text);
     }
     return plain;
 }

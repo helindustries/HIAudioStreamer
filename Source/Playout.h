@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Protocol.h"
 #include "RingBuffer.h"
 
 #include <array>
@@ -35,6 +36,6 @@ namespace HIAudioStreamer
         bool Primed = false;
         double Position = 0.0;
         double SmoothedFill = 0.0;
-        std::array<std::array<float, 2>, 4> History{};
+        std::array<std::array<float, Channels>, 4> History{};
     };
 } // namespace HIAudioStreamer

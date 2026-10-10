@@ -1,29 +1,36 @@
 #include "AudioBackend.h"
-
-#include <QtCore/QString>
+#include "Protocol.h"
 
 #include <QtCore/QSettings>
+#include <QtCore/QString>
 
+// clang-format off
+// Windows.h comes first, and initguid.h must precede the header whose property keys it defines
+// in this translation unit rather than leaving them extern.
 #include <Windows.h>
 #include <audioclient.h>
-#include <endpointvolume.h>
 #include <audioclientactivationparams.h>
 #include <avrt.h>
+#include <endpointvolume.h>
 #include <mmdeviceapi.h>
 #include <wrl/client.h>
 #include <wrl/implements.h>
-// Defines the property keys below in this translation unit rather than leaving them extern.
 #include <initguid.h>
 #include <functiondiscoverykeys_devpkey.h>
+// clang-format on
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <future>
+#include <span>
 #include <thread>
 #include <vector>
 
+// <editor-fold desc="Streams">
 namespace
 {
+    using HIAudioStreamer::Channels;
     using Microsoft::WRL::ComPtr;
 
     constexpr auto StreamRate = 48000;
@@ -31,6 +38,7 @@ namespace
     constexpr auto WaitTimeoutMs = DWORD{200};
     constexpr auto ActivationTimeoutMs = DWORD{5000};
     constexpr auto MaxFrames = std::size_t{48000};
+    constexpr auto Pcm16Scale = 32768.0f;
     // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, spelled out so no extra library has to provide it.
     constexpr auto FloatSubtype =
         GUID{0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
@@ -55,7 +63,7 @@ namespace
     {
         auto format = WAVEFORMATEXTENSIBLE{};
         format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-        format.Format.nChannels = 2;
+        format.Format.nChannels = Channels;
         format.Format.nSamplesPerSec = StreamRate;
         format.Format.wBitsPerSample = 32;
         format.Format.nBlockAlign = format.Format.nChannels * format.Format.wBitsPerSample / 8;
@@ -73,7 +81,7 @@ namespace
     {
         auto format = WAVEFORMATEX{};
         format.wFormatTag = WAVE_FORMAT_PCM;
-        format.nChannels = 2;
+        format.nChannels = Channels;
         format.nSamplesPerSec = StreamRate;
         format.wBitsPerSample = 16;
         format.nBlockAlign = format.nChannels * format.wBitsPerSample / 8;
@@ -83,8 +91,8 @@ namespace
 
     class ActivationHandler
         : public Microsoft::WRL::RuntimeClass<
-              Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, Microsoft::WRL::FtmBase,
-              IActivateAudioInterfaceCompletionHandler>
+              Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+              Microsoft::WRL::FtmBase, IActivateAudioInterfaceCompletionHandler>
     {
     public:
         ActivationHandler()
@@ -126,11 +134,14 @@ namespace
         auto handler = Microsoft::WRL::Make<ActivationHandler>();
         auto operation = ComPtr<IActivateAudioInterfaceAsyncOperation>();
         auto result = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-            __uuidof(IAudioClient), &variant, handler.Get(), &operation);
+                                                  __uuidof(IAudioClient), &variant, handler.Get(),
+                                                  &operation);
         if (SUCCEEDED(result))
+        {
             result = WaitForSingleObject(handler->Done, ActivationTimeoutMs) == WAIT_OBJECT_0
                          ? handler->Result
                          : HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+        }
         if (SUCCEEDED(result)) client = handler->Client;
         return result;
     }
@@ -140,14 +151,18 @@ namespace
         auto enumerator = ComPtr<IMMDeviceEnumerator>();
         auto device = ComPtr<IMMDevice>();
         auto result = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-            IID_PPV_ARGS(&enumerator));
+                                       IID_PPV_ARGS(&enumerator));
         if (SUCCEEDED(result))
+        {
             result = id.isEmpty()
                          ? enumerator->GetDefaultAudioEndpoint(flow, eConsole, &device)
                          : enumerator->GetDevice(reinterpret_cast<LPCWSTR>(id.utf16()), &device);
+        }
         if (SUCCEEDED(result))
+        {
             result = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                reinterpret_cast<void**>(client.ReleaseAndGetAddressOf()));
+                                      reinterpret_cast<void**>(client.ReleaseAndGetAddressOf()));
+        }
         return result;
     }
 
@@ -158,7 +173,7 @@ namespace
     {
     public:
         WasapiStream(Mode mode, QString deviceId, HIAudioStreamer::CaptureCallback onCapture,
-            HIAudioStreamer::RenderCallback onRender)
+                     HIAudioStreamer::RenderCallback onRender)
             : StreamMode(mode)
             , DeviceId(std::move(deviceId))
             , OnCapture(std::move(onCapture))
@@ -189,7 +204,7 @@ namespace
         HIAudioStreamer::RenderCallback OnRender;
         QString Failure;
         std::atomic<bool> Stopping{false};
-        std::vector<float> Scratch = std::vector<float>(MaxFrames * 2);
+        std::vector<float> Scratch = std::vector<float>(MaxFrames * Channels);
         std::thread Worker;
     };
 
@@ -213,31 +228,33 @@ namespace
                                      : AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
                                            | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY);
         if (SUCCEEDED(result))
+        {
             result = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BufferDuration, 0, format,
-                nullptr);
+                                        nullptr);
+        }
         if (SUCCEEDED(result)) result = client->SetEventHandle(event);
 
         auto capture = ComPtr<IAudioCaptureClient>();
         auto renderer = ComPtr<IAudioRenderClient>();
         if (SUCCEEDED(result))
+        {
             result = render ? client->GetService(IID_PPV_ARGS(&renderer))
                             : client->GetService(IID_PPV_ARGS(&capture));
+        }
         auto bufferFrames = UINT32{0};
         if (SUCCEEDED(result)) result = client->GetBufferSize(&bufferFrames);
         if (SUCCEEDED(result)) result = client->Start();
 
         const auto running = SUCCEEDED(result);
-        started.set_value(running ? QString() : Describe(render ? "Opening the audio output"
-                                                         : system ? "Capturing system audio"
-                                                                  : "Opening the audio input",
-                                                    result));
+        const auto* step = render   ? "Opening the audio output"
+                           : system ? "Capturing system audio"
+                                    : "Opening the audio input";
+        started.set_value(running ? QString() : Describe(step, result));
         while (running && !Stopping)
             if (WaitForSingleObject(event, WaitTimeoutMs) == WAIT_OBJECT_0)
             {
-                if (render)
-                    PumpRender(*client.Get(), *renderer.Get(), bufferFrames);
-                else
-                    PumpCapture(*capture.Get(), system);
+                if (render) PumpRender(*client.Get(), *renderer.Get(), bufferFrames);
+                else PumpCapture(*capture.Get(), system);
             }
 
         if (running) client->Stop();
@@ -259,45 +276,82 @@ namespace
             if (draining)
             {
                 const auto count = std::min<std::size_t>(frames, MaxFrames);
-                const auto silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
-                for (auto i = std::size_t{0}; i < count * 2; ++i)
-                    Scratch[i] = silent ? 0.0f
-                                 : pcm16 ? reinterpret_cast<const std::int16_t*>(data)[i] / 32768.0f
-                                         : reinterpret_cast<const float*>(data)[i];
-                OnCapture(Scratch.data(), count, StreamRate);
+                const auto samples = std::span(Scratch).first(count * Channels);
+                if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0) std::ranges::fill(samples, 0.0f);
+                else if (pcm16)
+                {
+                    std::ranges::transform(std::span(reinterpret_cast<const std::int16_t*>(data),
+                                                     samples.size()),
+                                           samples.begin(),
+                                           [](std::int16_t sample) { return sample / Pcm16Scale; });
+                }
+                else
+                {
+                    std::ranges::copy(std::span(reinterpret_cast<const float*>(data),
+                                                samples.size()),
+                                      samples.begin());
+                }
+                OnCapture(samples.data(), count, StreamRate);
                 capture.ReleaseBuffer(frames);
             }
         }
     }
 
     void WasapiStream::PumpRender(IAudioClient& client, IAudioRenderClient& render,
-        UINT32 bufferFrames)
+                                  UINT32 bufferFrames)
     {
-        auto padding = UINT32{0};
-        if (SUCCEEDED(client.GetCurrentPadding(&padding)) && padding < bufferFrames)
+        if (auto padding = UINT32{0};
+            SUCCEEDED(client.GetCurrentPadding(&padding)) && padding < bufferFrames)
         {
             const auto frames = bufferFrames - padding;
-            auto* data = static_cast<BYTE*>(nullptr);
-            if (SUCCEEDED(render.GetBuffer(frames, &data)))
+            if (auto* data = static_cast<BYTE*>(nullptr);
+                SUCCEEDED(render.GetBuffer(frames, &data)))
             {
-                auto* samples = reinterpret_cast<float*>(data);
-                std::fill(samples, samples + frames * 2, 0.0f);
-                OnRender(samples, frames, StreamRate);
+                const auto samples = std::span(reinterpret_cast<float*>(data), frames * Channels);
+                std::ranges::fill(samples, 0.0f);
+                OnRender(samples.data(), frames, StreamRate);
                 render.ReleaseBuffer(frames, 0);
             }
         }
     }
+} // namespace
 
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartSystemCapture(
+    CaptureCallback callback)
+{
+    return std::make_unique<WasapiStream>(Mode::SystemCapture, QString(), std::move(callback),
+                                          RenderCallback());
+}
+
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartDeviceCapture(
+    const QString& deviceId, CaptureCallback callback)
+{
+    return std::make_unique<WasapiStream>(Mode::DeviceCapture, deviceId, std::move(callback),
+                                          RenderCallback());
+}
+
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartRender(const QString& deviceId,
+                                                                           RenderCallback callback)
+{
+    return std::make_unique<WasapiStream>(Mode::Render, deviceId, CaptureCallback(),
+                                          std::move(callback));
+}
+// </editor-fold>
+
+// <editor-fold desc="Devices">
+namespace
+{
     QList<HIAudioStreamer::DeviceInfo> Endpoints(EDataFlow flow)
     {
         auto devices = QList<HIAudioStreamer::DeviceInfo>();
         auto enumerator = ComPtr<IMMDeviceEnumerator>();
         auto collection = ComPtr<IMMDeviceCollection>();
-        auto count = UINT{0};
-        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                IID_PPV_ARGS(&enumerator)))
+        if (auto count = UINT{0};
+            SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                       IID_PPV_ARGS(&enumerator)))
             && SUCCEEDED(enumerator->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &collection))
             && SUCCEEDED(collection->GetCount(&count)))
+        {
             for (auto i = UINT{0}; i < count; ++i)
             {
                 auto device = ComPtr<IMMDevice>();
@@ -309,33 +363,18 @@ namespace
                     && SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties))
                     && SUCCEEDED(properties->GetValue(PKEY_Device_FriendlyName, &name))
                     && name.vt == VT_LPWSTR)
-                    devices.append({QString::fromWCharArray(id), QString::fromWCharArray(name.pwszVal)});
+                {
+                    devices.append(
+                        {QString::fromWCharArray(id), QString::fromWCharArray(name.pwszVal)});
+                }
                 PropVariantClear(&name);
                 if (id != nullptr) CoTaskMemFree(id);
             }
+        }
+        else qWarning("Cannot list the audio endpoints");
         return devices;
     }
 } // namespace
-
-std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartSystemCapture(CaptureCallback callback)
-{
-    return std::make_unique<WasapiStream>(Mode::SystemCapture, QString(), std::move(callback),
-        RenderCallback());
-}
-
-std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartDeviceCapture(const QString& deviceId,
-    CaptureCallback callback)
-{
-    return std::make_unique<WasapiStream>(Mode::DeviceCapture, deviceId, std::move(callback),
-        RenderCallback());
-}
-
-std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartRender(const QString& deviceId,
-    RenderCallback callback)
-{
-    return std::make_unique<WasapiStream>(Mode::Render, deviceId, CaptureCallback(),
-        std::move(callback));
-}
 
 QList<HIAudioStreamer::DeviceInfo> HIAudioStreamer::InputDevices()
 {
@@ -347,8 +386,26 @@ QList<HIAudioStreamer::DeviceInfo> HIAudioStreamer::OutputDevices()
     return Endpoints(eRender);
 }
 
+QString HIAudioStreamer::DefaultOutputId()
+{
+    auto enumerator = ComPtr<IMMDeviceEnumerator>();
+    auto device = ComPtr<IMMDevice>();
+    auto* id = LPWSTR{nullptr};
+    auto result = QString();
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                   IID_PPV_ARGS(&enumerator)))
+        && SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device))
+        && SUCCEEDED(device->GetId(&id)))
+        result = QString::fromWCharArray(id);
+    if (id != nullptr) CoTaskMemFree(id);
+    return result;
+}
+// </editor-fold>
+
+// <editor-fold desc="Local mute">
 namespace
 {
+    constexpr auto MuteGroup = "LocalMute";
     constexpr auto MuteDeviceKey = "LocalMute/Device";
     constexpr auto MuteWasMutedKey = "LocalMute/WasMuted";
 
@@ -359,16 +416,21 @@ namespace
         auto volume = ComPtr<IAudioEndpointVolume>();
         auto* id = LPWSTR{nullptr};
         auto result = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-            IID_PPV_ARGS(&enumerator));
+                                       IID_PPV_ARGS(&enumerator));
         if (SUCCEEDED(result))
-            result = deviceId.isEmpty()
-                         ? enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)
-                         : enumerator->GetDevice(reinterpret_cast<LPCWSTR>(deviceId.utf16()), &device);
+        {
+            result =
+                deviceId.isEmpty()
+                    ? enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)
+                    : enumerator->GetDevice(reinterpret_cast<LPCWSTR>(deviceId.utf16()), &device);
+        }
         if (SUCCEEDED(result)) result = device->GetId(&id);
         if (SUCCEEDED(result) && resolvedId != nullptr) *resolvedId = QString::fromWCharArray(id);
         if (SUCCEEDED(result))
+        {
             result = device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr,
-                reinterpret_cast<void**>(volume.ReleaseAndGetAddressOf()));
+                                      reinterpret_cast<void**>(volume.ReleaseAndGetAddressOf()));
+        }
         if (id != nullptr) CoTaskMemFree(id);
         return SUCCEEDED(result) ? volume : ComPtr<IAudioEndpointVolume>();
     }
@@ -383,8 +445,7 @@ namespace
         EndpointMute()
             : Volume(EndpointVolume(QString(), &DeviceId))
         {
-            auto muted = BOOL{FALSE};
-            if (Volume != nullptr && SUCCEEDED(Volume->GetMute(&muted)))
+            if (auto muted = BOOL{FALSE}; Volume != nullptr && SUCCEEDED(Volume->GetMute(&muted)))
             {
                 WasMuted = muted != FALSE;
                 auto settings = QSettings();
@@ -394,15 +455,13 @@ namespace
                 if (FAILED(Volume->SetMute(TRUE, nullptr)))
                     Failure = QStringLiteral("Could not mute the local output");
             }
-            else
-                Failure = QStringLiteral("Could not reach the local output to mute it");
+            else Failure = QStringLiteral("Could not reach the local output to mute it");
         }
 
         ~EndpointMute() override
         {
             if (Volume != nullptr) Volume->SetMute(WasMuted ? TRUE : FALSE, nullptr);
-            auto settings = QSettings();
-            settings.remove(QStringLiteral("LocalMute"));
+            QSettings().remove(MuteGroup);
         }
 
         [[nodiscard]] QString Error() const override { return Failure; }
@@ -422,27 +481,13 @@ std::unique_ptr<HIAudioStreamer::LocalMute> HIAudioStreamer::MuteLocalOutput()
 
 void HIAudioStreamer::RestoreLocalOutput()
 {
-    auto settings = QSettings();
-    if (settings.contains(MuteDeviceKey))
+    if (auto settings = QSettings(); settings.contains(MuteDeviceKey))
     {
-        const auto volume = EndpointVolume(settings.value(MuteDeviceKey).toString(), nullptr);
-        if (volume != nullptr)
+        const auto device = settings.value(MuteDeviceKey).toString();
+        if (const auto volume = EndpointVolume(device, nullptr); volume != nullptr)
             volume->SetMute(settings.value(MuteWasMutedKey).toBool() ? TRUE : FALSE, nullptr);
-        settings.remove(QStringLiteral("LocalMute"));
+        else qWarning("Cannot reach output %s to restore its mute state", qUtf8Printable(device));
+        settings.remove(MuteGroup);
     }
 }
-
-QString HIAudioStreamer::DefaultOutputId()
-{
-    auto enumerator = ComPtr<IMMDeviceEnumerator>();
-    auto device = ComPtr<IMMDevice>();
-    auto* id = LPWSTR{nullptr};
-    auto result = QString();
-    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-            IID_PPV_ARGS(&enumerator)))
-        && SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device))
-        && SUCCEEDED(device->GetId(&id)))
-        result = QString::fromWCharArray(id);
-    if (id != nullptr) CoTaskMemFree(id);
-    return result;
-}
+// </editor-fold>

@@ -13,7 +13,7 @@ jobs:
   windows:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
@@ -28,7 +28,7 @@ jobs:
       - name: Build and package
         shell: cmd
         run: Tools\Build.cmd "%GITHUB_WORKSPACE%\build"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: build/HIAudioStreamer-*-setup.exe
@@ -37,7 +37,7 @@ jobs:
   macos:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
@@ -49,7 +49,7 @@ jobs:
         run: |
           brew list ninja >/dev/null 2>&1 || brew install ninja
           Tools/Build.sh "$GITHUB_WORKSPACE/build"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: build/HIAudioStreamer-*-macos.dmg
@@ -62,7 +62,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

@@ -10,6 +10,7 @@
 #include <QtCore/QStringList>
 #include <QtCore/QThread>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -56,10 +57,11 @@ namespace HIAudioStreamer
 
     private:
         void Mix(float* frames, std::size_t count, int rate);
+        void OnNetwork(std::function<void(Network&)> work,
+                       Qt::ConnectionType type = Qt::QueuedConnection);
 
         RingBuffer Outgoing;
         std::vector<std::unique_ptr<Playout>> Incoming;
-        std::vector<float> MixScratch;
         LinkStats Stats;
         QThread NetworkThread;
         std::unique_ptr<Network> NetworkObject;

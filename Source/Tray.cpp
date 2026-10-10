@@ -14,7 +14,10 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QInputDialog>
 
+#include <algorithm>
 #include <array>
+#include <iterator>
+#include <optional>
 
 namespace
 {
@@ -25,6 +28,9 @@ namespace
     constexpr auto Title = "HIAudioStreamer";
     constexpr auto DiagnosticsEveryTicks = 10;
     constexpr auto MaxLogBytes = 1024 * 1024;
+    constexpr auto LogFile = "HIAudioStreamer.log";
+    // Sending, one per connection, the local mute, and room for an error.
+    constexpr auto StatusLineCount = 1 + HIAudioStreamer::MaxPeers + 2;
 
     // A speaker, with sound waves while anything is being sent or played. Drawn rather than
     // shipped as a file; on macOS it is a template image so the menu bar can tint it.
@@ -42,7 +48,7 @@ namespace
         painter.setPen(QPen(colour, 6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.setBrush(colour);
         painter.drawPolygon(QPolygonF({QPointF(6, 24), QPointF(18, 24), QPointF(32, 10),
-            QPointF(32, 54), QPointF(18, 40), QPointF(6, 40)}));
+                                       QPointF(32, 54), QPointF(18, 40), QPointF(6, 40)}));
         painter.setBrush(Qt::NoBrush);
         if (active)
         {
@@ -65,15 +71,15 @@ namespace
         widget.activateWindow();
     }
 
-    QString AskText(const QString& label, const QString& initial, bool& accepted)
+    // Nothing when the dialog was cancelled.
+    std::optional<QString> AskText(const QString& label)
     {
         auto dialog = QInputDialog();
         dialog.setWindowTitle(QString::fromUtf8(Title));
         dialog.setLabelText(label);
-        dialog.setTextValue(initial);
         BringForward(dialog);
-        accepted = dialog.exec() == QDialog::Accepted;
-        return dialog.textValue().trimmed();
+        return dialog.exec() == QDialog::Accepted ? std::optional(dialog.textValue().trimmed())
+                                                  : std::nullopt;
     }
 } // namespace
 
@@ -81,12 +87,11 @@ HIAudioStreamer::Tray::Tray()
     : Current(LoadConfig())
 {
     SaveConfig(Current);
-    for (auto i = 0; i < 1 + MaxPeers + 2; ++i)
-    {
+    std::ranges::generate_n(std::back_inserter(StatusLines), StatusLineCount, [this] {
         auto* line = Menu.addAction(QString());
         line->setEnabled(false);
-        StatusLines.push_back(line);
-    }
+        return line;
+    });
     Menu.addSeparator();
     SendAction = Menu.addAction(QStringLiteral("Send"));
     SendAction->setCheckable(true);
@@ -104,7 +109,13 @@ HIAudioStreamer::Tray::Tray()
         Current.Send = on;
         Commit();
     });
-    connect(AutostartAction, &QAction::triggered, this, [](bool on) { SetAutostart(on); });
+    connect(AutostartAction, &QAction::triggered, this, [this](bool on) {
+        if (const auto error = SetAutostart(on); !error.isEmpty())
+        {
+            Icon.showMessage(QString::fromUtf8(Title), error, QSystemTrayIcon::Warning, MessageMs);
+            AutostartAction->setChecked(AutostartEnabled());
+        }
+    });
     connect(quit, &QAction::triggered, qApp, &QApplication::quit);
     // A logoff or shutdown may end the process without running destructors, so the local
     // output is given back while there is still time.
@@ -137,9 +148,11 @@ HIAudioStreamer::Tray::Tray()
     RefreshStatus();
     StatusTimer.start(StatusRefreshMs);
     if (Current.Peers.isEmpty())
+    {
         Icon.showMessage(QString::fromUtf8(Title),
-            QStringLiteral("Not connected yet. Use Connections > Add Connection."),
-            QSystemTrayIcon::Information, MessageMs);
+                         QStringLiteral("Not connected yet. Use Connections > Add Connection."),
+                         QSystemTrayIcon::Information, MessageMs);
+    }
 }
 
 void HIAudioStreamer::Tray::Commit()
@@ -155,8 +168,7 @@ void HIAudioStreamer::Tray::Commit()
 // which is why both streams restart rather than only the playback.
 void HIAudioStreamer::Tray::FollowDefaultOutput()
 {
-    const auto current = DefaultOutputId();
-    if (current != DefaultOutput && !current.isEmpty())
+    if (const auto current = DefaultOutputId(); current != DefaultOutput && !current.isEmpty())
     {
         WriteDiagnostics(QStringLiteral("default output changed to %1").arg(current));
         DefaultOutput = current;
@@ -167,14 +179,20 @@ void HIAudioStreamer::Tray::FollowDefaultOutput()
 void HIAudioStreamer::Tray::WriteDiagnostics(const QString& line)
 {
     const auto folder = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    QDir().mkpath(folder);
-    auto file = QFile(folder + QStringLiteral("/HIAudioStreamer.log"));
-    const auto mode = file.size() > MaxLogBytes ? QIODevice::WriteOnly | QIODevice::Truncate
-                                                : QIODevice::WriteOnly | QIODevice::Append;
-    if (file.open(mode))
+    if (auto file = QFile(QDir(folder).filePath(QString::fromUtf8(LogFile)));
+        QDir().mkpath(folder)
+        && file.open(QIODevice::WriteOnly
+                     | (file.size() > MaxLogBytes ? QIODevice::Truncate : QIODevice::Append)))
+    {
         file.write((QDateTime::currentDateTime().toString(Qt::ISODate) + QLatin1Char(' ') + line
                     + QLatin1Char('\n'))
                        .toUtf8());
+    }
+    else
+    {
+        qWarning("Cannot write the log %s: %s", qUtf8Printable(file.fileName()),
+                 qUtf8Printable(file.errorString()));
+    }
 }
 
 void HIAudioStreamer::Tray::RefreshStatus()
@@ -187,15 +205,15 @@ void HIAudioStreamer::Tray::RefreshStatus()
         WriteDiagnostics(Link.Diagnostics());
     }
     const auto lines = Link.Status().split(QLatin1Char('\n'));
-    for (auto i = std::size_t{0}; i < StatusLines.size(); ++i)
+    for (auto i = qsizetype{0}; auto* statusLine : StatusLines)
     {
-        const auto shown = static_cast<qsizetype>(i) < lines.size();
-        StatusLines[i]->setVisible(shown);
-        if (shown) StatusLines[i]->setText(lines[i]);
+        const auto shown = i < lines.size();
+        statusLine->setVisible(shown);
+        if (shown) statusLine->setText(lines[i]);
+        ++i;
     }
     Icon.setToolTip(lines.join(QLatin1Char('\n')));
-    const auto active = Link.Active();
-    if (active != ShowingActive)
+    if (const auto active = Link.Active(); active != ShowingActive)
     {
         ShowingActive = active;
         Icon.setIcon(MakeIcon(active));
@@ -222,8 +240,8 @@ void HIAudioStreamer::Tray::RefreshMenus()
     };
     addSource(QStringLiteral("System Audio"), QString());
     SourceMenu->addSeparator();
-    for (const auto& device : InputDevices())
-        addSource(device.Name, device.Id);
+    for (const auto& [id, name] : InputDevices())
+        addSource(name, id);
 
     OutputMenu->clear();
     auto* outputs = new QActionGroup(OutputMenu);
@@ -239,8 +257,8 @@ void HIAudioStreamer::Tray::RefreshMenus()
     };
     addOutput(QStringLiteral("System Default"), QString());
     OutputMenu->addSeparator();
-    for (const auto& device : OutputDevices())
-        addOutput(device.Name, device.Id);
+    for (const auto& [id, name] : OutputDevices())
+        addOutput(name, id);
 
     BufferMenu->clear();
     auto* buffers = new QActionGroup(BufferMenu);
@@ -257,10 +275,10 @@ void HIAudioStreamer::Tray::RefreshMenus()
     }
 
     ConnectionsMenu->clear();
-    for (auto i = 0; i < Current.Peers.size(); ++i)
+    for (auto i = 0; const auto& peer : Current.Peers)
     {
-        const auto& peer = Current.Peers[i];
-        auto* entry = ConnectionsMenu->addMenu(QStringLiteral("%1 (%2)").arg(peer.Name, peer.Address));
+        auto* entry =
+            ConnectionsMenu->addMenu(QStringLiteral("%1 (%2)").arg(peer.Name, peer.Address));
         auto* send = entry->addAction(QStringLiteral("Send to %1").arg(peer.Name));
         send->setCheckable(true);
         send->setChecked(peer.Send);
@@ -273,6 +291,7 @@ void HIAudioStreamer::Tray::RefreshMenus()
             Current.Peers.removeAt(i);
             Commit();
         });
+        ++i;
     }
     if (!Current.Peers.isEmpty()) ConnectionsMenu->addSeparator();
     auto* add = ConnectionsMenu->addAction(QStringLiteral("Add Connection…"));
@@ -282,39 +301,35 @@ void HIAudioStreamer::Tray::RefreshMenus()
 
 void HIAudioStreamer::Tray::AddConnection()
 {
-    auto accepted = false;
-    const auto address = AskText(QStringLiteral("IP address of the other machine, optionally "
-                                                "with :port.\nHIAudioStreamer must be running there."),
-        QString(), accepted);
-    if (accepted && !address.isEmpty())
+    if (const auto address = AskText(QStringLiteral("IP address of the other machine, optionally "
+                                                    "with :port.\nHIAudioStreamer must be "
+                                                    "running there."));
+        address && !address->isEmpty())
     {
-        Link.StartPairing(address);
+        Link.StartPairing(*address);
         Icon.showMessage(QString::fromUtf8(Title),
-            QStringLiteral("Asking %1 to pair…").arg(address), QSystemTrayIcon::Information,
-            MessageMs);
+                         QStringLiteral("Asking %1 to pair…").arg(*address),
+                         QSystemTrayIcon::Information, MessageMs);
     }
 }
 
 void HIAudioStreamer::Tray::HandleCodeNeeded(const QString& name, const QString& address)
 {
-    auto accepted = false;
-    const auto code = AskText(QStringLiteral("Enter the 4-digit code that %1 (%2) is showing.")
-                                  .arg(name, address),
-        QString(), accepted);
-    if (accepted)
-        Link.ConfirmPairing(code);
-    else
-        Link.CancelPairing();
+    if (const auto code = AskText(
+            QStringLiteral("Enter the 4-digit code that %1 (%2) is showing.").arg(name, address)))
+        Link.ConfirmPairing(*code);
+    else Link.CancelPairing();
 }
 
 void HIAudioStreamer::Tray::HandleCodeShown(const QString& name, const QString& address,
-    const QString& code)
+                                            const QString& code)
 {
     CloseCodeBox();
-    CodeBox = new QMessageBox(QMessageBox::Information, QString::fromUtf8(Title),
-        QStringLiteral("%1 (%2) wants to connect.\n\nEnter this code there:\n\n%3")
-            .arg(name, address, code),
-        QMessageBox::Cancel);
+    CodeBox =
+        new QMessageBox(QMessageBox::Information, QString::fromUtf8(Title),
+                        QStringLiteral("%1 (%2) wants to connect.\n\nEnter this code there:\n\n%3")
+                            .arg(name, address, code),
+                        QMessageBox::Cancel);
     CodeBox->setAttribute(Qt::WA_DeleteOnClose);
     connect(CodeBox, &QMessageBox::rejected, this, [this] { Link.CancelPairing(); });
     BringForward(*CodeBox);
@@ -333,17 +348,17 @@ void HIAudioStreamer::Tray::HandlePaired(const HIAudioStreamer::Peer& peer)
 {
     CloseCodeBox();
     // Pairing again with a known machine replaces it rather than listing it twice.
-    auto replaced = false;
-    for (auto& existing : Current.Peers)
-        if (!replaced && (existing.PublicKey == peer.PublicKey || existing.Address == peer.Address))
-        {
-            existing = peer;
-            replaced = true;
-        }
-    if (!replaced) Current.Peers.append(peer);
+    if (auto existing = std::ranges::find_if(Current.Peers,
+                                             [&peer](const auto& known) {
+                                                 return known.PublicKey == peer.PublicKey
+                                                        || known.Address == peer.Address;
+                                             });
+        existing != Current.Peers.end())
+        *existing = peer;
+    else Current.Peers.append(peer);
     Commit();
     Icon.showMessage(QString::fromUtf8(Title), QStringLiteral("Connected to %1").arg(peer.Name),
-        QSystemTrayIcon::Information, MessageMs);
+                     QSystemTrayIcon::Information, MessageMs);
 }
 
 void HIAudioStreamer::Tray::HandlePairingFailed(const QString& message)

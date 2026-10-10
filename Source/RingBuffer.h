@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Protocol.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
@@ -15,7 +17,7 @@ namespace HIAudioStreamer
     {
     public:
         explicit RingBuffer(std::size_t capacityFrames)
-            : Samples(capacityFrames * 2)
+            : Samples(capacityFrames * Channels)
             , Capacity(capacityFrames)
         {}
 
@@ -33,9 +35,8 @@ namespace HIAudioStreamer
             const auto accepted = std::min(count, Capacity - used);
             for (auto i = std::size_t{0}; i < accepted; ++i)
             {
-                const auto slot = ((write + i) % Capacity) * 2;
-                Samples[slot] = frames[i * 2];
-                Samples[slot + 1] = frames[i * 2 + 1];
+                const auto slot = ((write + i) % Capacity) * Channels;
+                std::copy_n(frames + i * Channels, Channels, Samples.begin() + slot);
             }
             WriteIndex.store(write + accepted, std::memory_order_release);
             return accepted;
@@ -48,9 +49,8 @@ namespace HIAudioStreamer
             const auto taken = std::min(count, WriteIndex.load(std::memory_order_acquire) - read);
             for (auto i = std::size_t{0}; i < taken; ++i)
             {
-                const auto slot = ((read + i) % Capacity) * 2;
-                frames[i * 2] = Samples[slot];
-                frames[i * 2 + 1] = Samples[slot + 1];
+                const auto slot = ((read + i) % Capacity) * Channels;
+                std::copy_n(Samples.begin() + slot, Channels, frames + i * Channels);
             }
             ReadIndex.store(read + taken, std::memory_order_release);
             return taken;

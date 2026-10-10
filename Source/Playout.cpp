@@ -57,21 +57,22 @@ void HIAudioStreamer::Playout::MixInto(float* frames, std::size_t count, int out
             Position += ratio;
             while (Position >= 1.0 && !starved)
             {
-                auto next = std::array<float, 2>{};
-                if (Ring.Read(next.data(), 1) == 1)
+                if (auto next = std::array<float, Channels>{}; Ring.Read(next.data(), 1) == 1)
                 {
                     History = {History[1], History[2], History[3], next};
                     Position -= 1.0;
                 }
-                else
-                    starved = true;
+                else starved = true;
             }
             if (!starved)
             {
                 const auto t = static_cast<float>(Position);
-                for (auto channel = 0; channel < 2; ++channel)
-                    frames[produced * 2 + channel] += Hermite(History[0][channel],
-                        History[1][channel], History[2][channel], History[3][channel], t);
+                const auto& [h0, h1, h2, h3] = History;
+                for (auto channel = 0; channel < Channels; ++channel)
+                {
+                    frames[produced * Channels + channel] +=
+                        Hermite(h0[channel], h1[channel], h2[channel], h3[channel], t);
+                }
             }
         }
         if (starved)

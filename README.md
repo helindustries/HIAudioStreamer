@@ -19,7 +19,7 @@ HIAudioStreamer streams audio between Windows and macOS computers on a local net
 
 ## Installing
 
-Download the installer for each machine from the [releases page](https://github.com/helindustries/HIAudioStreamer/releases).
+Download the installer for each machine from the [releases page](https://github.com/helindustries/hi-audio-streamer/releases).
 
 **Windows:** run `HIAudioStreamer-<version>-windows-x64-setup.exe`. It requests administrator rights to create a firewall rule permitting other machines to reach HIAudioStreamer on private and domain networks. On networks classified as public by Windows, no connections will be established; switch such networks to private. The installer is not yet code-signed, so SmartScreen may display a warning (More info, Run anyway).
 

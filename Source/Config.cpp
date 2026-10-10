@@ -2,36 +2,59 @@
 
 #include <QtCore/QSettings>
 #include <QtCore/QSysInfo>
+#include <QtCore/QtGlobal>
 
+#include <ranges>
+
+namespace
+{
+    constexpr auto IdentityKey = "Identity";
+    constexpr auto NameKey = "Name";
+    constexpr auto PortKey = "Port";
+    constexpr auto SendKey = "Send";
+    constexpr auto SourceKey = "Source";
+    constexpr auto OutputKey = "Output";
+    constexpr auto BufferMsKey = "BufferMs";
+    constexpr auto PeersKey = "Peers";
+    constexpr auto AddressKey = "Address";
+    constexpr auto PublicKeyKey = "PublicKey";
+    constexpr auto SharedKeyKey = "Key";
+} // namespace
+
+// Anything missing from the settings keeps the default the structs declare.
 HIAudioStreamer::Config HIAudioStreamer::LoadConfig()
 {
     auto settings = QSettings();
     auto config = Config();
-    config.Self.Secret = QByteArray::fromBase64(settings.value("Identity").toByteArray());
-    if (config.Self.Secret.size() != KeySize)
-        config.Self = CreateIdentity();
-    else
-        config.Self.Public = PublicKeyFor(config.Self.Secret);
+    if (const auto secret = QByteArray::fromBase64(settings.value(IdentityKey).toByteArray());
+        secret.size() == KeySize)
+        config.Self = {secret, PublicKeyFor(secret)};
+    else config.Self = CreateIdentity();
 
-    config.Name = settings.value("Name", QSysInfo::machineHostName()).toString();
-    config.Port = static_cast<quint16>(settings.value("Port", DefaultPort).toUInt());
-    config.Send = settings.value("Send", true).toBool();
-    config.Source = settings.value("Source").toString();
-    config.Output = settings.value("Output").toString();
-    config.BufferMs = settings.value("BufferMs", 40).toInt();
+    config.Name = settings.value(NameKey, QSysInfo::machineHostName()).toString();
+    config.Port = static_cast<quint16>(settings.value(PortKey, config.Port).toUInt());
+    config.Send = settings.value(SendKey, config.Send).toBool();
+    config.Source = settings.value(SourceKey).toString();
+    config.Output = settings.value(OutputKey).toString();
+    config.BufferMs = settings.value(BufferMsKey, config.BufferMs).toInt();
 
-    const auto count = settings.beginReadArray("Peers");
-    for (auto i = 0; i < count; ++i)
+    for (const auto i : std::views::iota(0, settings.beginReadArray(PeersKey)))
     {
         settings.setArrayIndex(i);
-        auto peer = Peer();
-        peer.Name = settings.value("Name").toString();
-        peer.Address = settings.value("Address").toString();
-        peer.PublicKey = QByteArray::fromBase64(settings.value("PublicKey").toByteArray());
-        peer.Key = QByteArray::fromBase64(settings.value("Key").toByteArray());
-        peer.Send = settings.value("Send", true).toBool();
+        const auto peer = Peer{
+            .Name = settings.value(NameKey).toString(),
+            .Address = settings.value(AddressKey).toString(),
+            .PublicKey = QByteArray::fromBase64(settings.value(PublicKeyKey).toByteArray()),
+            .Key = QByteArray::fromBase64(settings.value(SharedKeyKey).toByteArray()),
+            .Send = settings.value(SendKey, Peer().Send).toBool(),
+        };
         if (peer.PublicKey.size() == KeySize && peer.Key.size() == KeySize)
             config.Peers.append(peer);
+        else
+        {
+            qWarning("Ignoring stored connection %d (%s): its keys are not %d bytes", i,
+                     qUtf8Printable(peer.Name), KeySize);
+        }
     }
     settings.endArray();
     return config;
@@ -40,25 +63,24 @@ HIAudioStreamer::Config HIAudioStreamer::LoadConfig()
 void HIAudioStreamer::SaveConfig(const Config& config)
 {
     auto settings = QSettings();
-    settings.setValue("Identity", config.Self.Secret.toBase64());
-    settings.setValue("Name", config.Name);
-    settings.setValue("Port", config.Port);
-    settings.setValue("Send", config.Send);
-    settings.setValue("Source", config.Source);
-    settings.setValue("Output", config.Output);
-    settings.setValue("BufferMs", config.BufferMs);
+    settings.setValue(IdentityKey, config.Self.Secret.toBase64());
+    settings.setValue(NameKey, config.Name);
+    settings.setValue(PortKey, config.Port);
+    settings.setValue(SendKey, config.Send);
+    settings.setValue(SourceKey, config.Source);
+    settings.setValue(OutputKey, config.Output);
+    settings.setValue(BufferMsKey, config.BufferMs);
 
-    settings.remove("Peers");
-    settings.beginWriteArray("Peers", static_cast<int>(config.Peers.size()));
-    for (auto i = 0; i < config.Peers.size(); ++i)
+    settings.remove(PeersKey);
+    settings.beginWriteArray(PeersKey, static_cast<int>(config.Peers.size()));
+    for (auto i = 0; const auto& [name, address, publicKey, key, send] : config.Peers)
     {
-        const auto& peer = config.Peers[i];
-        settings.setArrayIndex(i);
-        settings.setValue("Name", peer.Name);
-        settings.setValue("Address", peer.Address);
-        settings.setValue("PublicKey", peer.PublicKey.toBase64());
-        settings.setValue("Key", peer.Key.toBase64());
-        settings.setValue("Send", peer.Send);
+        settings.setArrayIndex(i++);
+        settings.setValue(NameKey, name);
+        settings.setValue(AddressKey, address);
+        settings.setValue(PublicKeyKey, publicKey.toBase64());
+        settings.setValue(SharedKeyKey, key.toBase64());
+        settings.setValue(SendKey, send);
     }
     settings.endArray();
 }

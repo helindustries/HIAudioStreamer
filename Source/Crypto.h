@@ -28,12 +28,17 @@ namespace HIAudioStreamer
     [[nodiscard]] QString PairingCode(const QByteArray& sharedKey);
 
     // Proof, sent after the code was typed in correctly, that the sender holds the shared key.
-    [[nodiscard]] QByteArray ConfirmTag(const QByteArray& sharedKey, const QByteArray& senderPublic);
+    // Checked in constant time.
+    [[nodiscard]] QByteArray ConfirmTag(const QByteArray& sharedKey,
+                                        const QByteArray& senderPublic);
+    [[nodiscard]] bool ConfirmTagValid(const QByteArray& sharedKey, const QByteArray& senderPublic,
+                                       const QByteArray& tag);
 
     // XChaCha20-Poly1305. Seal returns the 16-byte tag followed by the ciphertext; Open returns
     // nothing when the tag does not verify.
     [[nodiscard]] QByteArray Seal(const QByteArray& key, const QByteArray& nonce,
-        const QByteArray& associated, const QByteArray& plain);
+                                  const QByteArray& associated, const QByteArray& plain);
     [[nodiscard]] std::optional<QByteArray> Open(const QByteArray& key, const QByteArray& nonce,
-        const QByteArray& associated, const QByteArray& sealed);
+                                                 const QByteArray& associated,
+                                                 const QByteArray& sealed);
 } // namespace HIAudioStreamer

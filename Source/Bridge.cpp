@@ -3,22 +3,23 @@
 #include <QtCore/QDateTime>
 
 #include <algorithm>
+#include <iterator>
+#include <ranges>
+#include <span>
 
 namespace
 {
     // One second at the highest rate a device is likely to run, per direction.
     constexpr auto BufferFrames = std::size_t{192000};
-    constexpr auto MixChunkFrames = std::size_t{4096};
     constexpr auto SilentAfterMs = 1000;
 } // namespace
 
 HIAudioStreamer::Bridge::Bridge()
     : Outgoing(BufferFrames)
-    , MixScratch(MixChunkFrames * Channels)
     , NetworkObject(std::make_unique<Network>(Outgoing, Incoming, Stats))
 {
-    for (auto i = 0; i < MaxPeers; ++i)
-        Incoming.push_back(std::make_unique<Playout>(BufferFrames));
+    std::ranges::generate_n(std::back_inserter(Incoming), MaxPeers,
+                            [] { return std::make_unique<Playout>(BufferFrames); });
 
     auto* network = NetworkObject.get();
     connect(network, &Network::PairingCodeShown, this, &Bridge::PairingCodeShown);
@@ -35,11 +36,15 @@ HIAudioStreamer::Bridge::~Bridge()
     Mute.reset();
     Capture.reset();
     Render.reset();
-    auto* network = NetworkObject.get();
-    QMetaObject::invokeMethod(network, [network] { network->Shutdown(); },
-        Qt::BlockingQueuedConnection);
+    OnNetwork([](auto& network) { network.Shutdown(); }, Qt::BlockingQueuedConnection);
     NetworkThread.quit();
     NetworkThread.wait();
+}
+
+void HIAudioStreamer::Bridge::OnNetwork(std::function<void(Network&)> work, Qt::ConnectionType type)
+{
+    auto* network = NetworkObject.get();
+    QMetaObject::invokeMethod(network, [network, work = std::move(work)] { work(*network); }, type);
 }
 
 void HIAudioStreamer::Bridge::Apply(const Config& config)
@@ -54,20 +59,18 @@ void HIAudioStreamer::Bridge::Apply(const Config& config)
     Stats.CaptureRate.store(0, std::memory_order_relaxed);
     for (auto& playout : Incoming)
         playout->TargetMs.store(config.BufferMs, std::memory_order_relaxed);
-
-    auto* network = NetworkObject.get();
-    QMetaObject::invokeMethod(network, [network, config] { network->Configure(config); },
-        Qt::QueuedConnection);
+    OnNetwork([config](auto& network) { network.Configure(config); });
 
     // Output first: on macOS the system tap can only exclude this process once the process has
     // an audio object, which playing gives it.
-    Render = StartRender(config.Output,
-        [this](float* frames, std::size_t count, int rate) { Mix(frames, count, rate); });
+    Render = StartRender(config.Output, [this](float* frames, std::size_t count, int rate) {
+        Mix(frames, count, rate);
+    });
     if (config.Send)
     {
-        auto onFrames = [this](const float* frames, std::size_t count, int rate) {
+        const auto onFrames = [this](const float* frames, std::size_t count, int rate) {
             Stats.CaptureRate.store(rate, std::memory_order_relaxed);
-            RecordPeak(Stats.CapturePeak, frames, count * Channels);
+            RecordPeak(Stats.CapturePeak, std::span(frames, count * Channels));
             Outgoing.Write(frames, count);
             NetworkObject->NotifyCaptured(rate);
         };
@@ -82,19 +85,20 @@ void HIAudioStreamer::Bridge::UpdateLocalMute()
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
     auto listened = false;
-    for (auto i = 0; i < std::min<int>(MaxPeers, Current.Peers.size()); ++i)
-        listened = listened
-                   || (Current.Peers[i].Send && now - Stats.LastListeningMs[i].load() < ListeningTimeoutMs);
+    for (auto slot = std::size_t{0}; const auto& peer : Current.Peers | std::views::take(MaxPeers))
+    {
+        const auto silentFor = now - Stats.Peers[slot++].LastListeningMs.load();
+        listened = listened || (peer.Send && silentFor < ListeningTimeoutMs);
+    }
     // Only the system mix is moved elsewhere; sending a microphone leaves the speakers alone.
     const auto streaming = Current.Send && Current.Source.isEmpty() && listened
                            && Capture != nullptr && Capture->Error().isEmpty();
     if (streaming && Mute == nullptr)
     {
         Mute = MuteLocalOutput();
-        if (!Mute->Error().isEmpty()) emit Failed(Mute->Error());
+        if (const auto error = Mute->Error(); !error.isEmpty()) emit Failed(error);
     }
-    else if (!streaming && Mute != nullptr)
-        Mute.reset();
+    else if (!streaming && Mute != nullptr) Mute.reset();
 }
 
 void HIAudioStreamer::Bridge::ReleaseLocalMute()
@@ -104,23 +108,20 @@ void HIAudioStreamer::Bridge::ReleaseLocalMute()
 
 void HIAudioStreamer::Bridge::Mix(float* frames, std::size_t count, int rate)
 {
-    for (auto done = std::size_t{0}; done < count; done += MixChunkFrames)
-    {
-        const auto chunk = std::min(MixChunkFrames, count - done);
-        auto* out = frames + done * Channels;
-        for (auto& playout : Incoming)
-            playout->MixInto(out, chunk, rate);
-        for (auto i = std::size_t{0}; i < chunk * Channels; ++i)
-            out[i] = std::clamp(out[i], -1.0f, 1.0f);
-    }
+    for (auto& playout : Incoming)
+        playout->MixInto(frames, count, rate);
+    for (auto& sample : std::span(frames, count * Channels))
+        sample = std::clamp(sample, -1.0f, 1.0f);
 }
 
 bool HIAudioStreamer::Bridge::Active() const
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
-    auto receiving = false;
-    for (auto i = 0; i < std::min<int>(MaxPeers, Current.Peers.size()); ++i)
-        receiving = receiving || now - Stats.LastReceivedMs[i].load() < SilentAfterMs;
+    const auto receiving = std::ranges::any_of(Stats.Peers | std::views::take(Current.Peers.size()),
+                                               [now](const auto& peer) {
+                                                   return now - peer.LastReceivedMs.load()
+                                                          < SilentAfterMs;
+                                               });
     return receiving || (Current.Send && Stats.CaptureRate.load() > 0);
 }
 
@@ -131,24 +132,22 @@ QString HIAudioStreamer::Bridge::Status() const
     if (Current.Send)
     {
         const auto rate = Stats.CaptureRate.load();
-        const auto targets = std::count_if(Current.Peers.begin(), Current.Peers.end(),
-            [](const auto& peer) { return peer.Send; });
+        const auto targets = std::ranges::count(Current.Peers, true, &Peer::Send);
         const auto source = Current.Source.isEmpty() ? QStringLiteral("system audio")
                                                      : QStringLiteral("input");
-        lines.append(rate > 0 && targets > 0
-                         ? QStringLiteral("Sending %1 to %2 at %3 kHz")
-                               .arg(source)
-                               .arg(targets)
-                               .arg(rate / 1000.0)
-                         : QStringLiteral("Sending: nothing playing yet"));
+        lines.append(rate > 0 && targets > 0 ? QStringLiteral("Sending %1 to %2 at %3 kHz")
+                                                   .arg(source)
+                                                   .arg(targets)
+                                                   .arg(rate / 1000.0)
+                                             : QStringLiteral("Sending: nothing playing yet"));
     }
-    for (auto i = 0; i < std::min<int>(MaxPeers, Current.Peers.size()); ++i)
+    for (auto slot = std::size_t{0}; const auto& peer : Current.Peers | std::views::take(MaxPeers))
     {
-        const auto receiving = now - Stats.LastReceivedMs[i].load() < SilentAfterMs;
-        lines.append(receiving ? QStringLiteral("%1: playing, %2 ms buffered")
-                                     .arg(Current.Peers[i].Name)
-                                     .arg(Incoming[i]->BufferedMs.load())
-                               : QStringLiteral("%1: silent").arg(Current.Peers[i].Name));
+        const auto receiving = now - Stats.Peers[slot].LastReceivedMs.load() < SilentAfterMs;
+        const auto buffered = Incoming[slot++]->BufferedMs.load();
+        lines.append(
+            receiving ? QStringLiteral("%1: playing, %2 ms buffered").arg(peer.Name).arg(buffered)
+                      : QStringLiteral("%1: silent").arg(peer.Name));
     }
     if (Mute != nullptr && Mute->Error().isEmpty())
         lines.append(QStringLiteral("Local output muted while streaming"));
@@ -159,46 +158,46 @@ QString HIAudioStreamer::Bridge::Status() const
 QString HIAudioStreamer::Bridge::Diagnostics()
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
+    const auto ago = [now](qint64 ms) {
+        return ms > 0 ? QStringLiteral("%1 ms ago").arg(now - ms) : QStringLiteral("never");
+    };
     auto line = QStringLiteral("send %1 local %2 capture %3 Hz peak %4 sent %5 rejected %6")
                     .arg(Current.Send ? QStringLiteral("on") : QStringLiteral("off"))
                     .arg(Mute != nullptr ? QStringLiteral("muted") : QStringLiteral("playing"))
                     .arg(Stats.CaptureRate.load())
-                    .arg(Stats.CapturePeak.exchange(0) / 1000.0, 0, 'f', 3)
+                    .arg(Stats.CapturePeak.exchange(0) / PeakScale, 0, 'f', 3)
                     .arg(Stats.PacketsSent.load())
                     .arg(Stats.PacketsRejected.load());
-    for (auto i = 0; i < std::min<int>(MaxPeers, Current.Peers.size()); ++i)
+    for (auto slot = std::size_t{0}; const auto& peer : Current.Peers | std::views::take(MaxPeers))
     {
-        const auto last = Stats.LastReceivedMs[i].load();
-        const auto listening = Stats.LastListeningMs[i].load();
-        line += QStringLiteral(" | %1 listening %2 received %3 peak %4 last %5 buffered %6 ms underruns %7")
-                    .arg(Current.Peers[i].Name)
-                    .arg(listening > 0 ? QStringLiteral("%1 ms ago").arg(now - listening) : QStringLiteral("never"))
-                    .arg(Stats.PacketsReceived[i].load())
-                    .arg(Stats.ReceivedPeak[i].exchange(0) / 1000.0, 0, 'f', 3)
-                    .arg(last > 0 ? QStringLiteral("%1 ms ago").arg(now - last) : QStringLiteral("never"))
-                    .arg(Incoming[i]->BufferedMs.load())
-                    .arg(Incoming[i]->Underruns.load());
+        auto& [lastReceivedMs, packetsReceived, lastListeningMs, receivedPeak] = Stats.Peers[slot];
+        const auto& playout = *Incoming[slot++];
+        line += QStringLiteral(" | %1 listening %2 received %3 peak %4 last %5 buffered %6 ms "
+                               "underruns %7")
+                    .arg(peer.Name)
+                    .arg(ago(lastListeningMs.load()))
+                    .arg(packetsReceived.load())
+                    .arg(receivedPeak.exchange(0) / PeakScale, 0, 'f', 3)
+                    .arg(ago(lastReceivedMs.load()))
+                    .arg(playout.BufferedMs.load())
+                    .arg(playout.Underruns.load());
     }
-    return line + (Errors.isEmpty() ? QString() : QStringLiteral(" | errors: ") + Errors.join("; "));
+    if (!Errors.isEmpty())
+        line += QStringLiteral(" | errors: ") + Errors.join(QStringLiteral("; "));
+    return line;
 }
 
 void HIAudioStreamer::Bridge::StartPairing(const QString& address)
 {
-    auto* network = NetworkObject.get();
-    QMetaObject::invokeMethod(network, [network, address] { network->StartPairing(address); },
-        Qt::QueuedConnection);
+    OnNetwork([address](auto& network) { network.StartPairing(address); });
 }
 
 void HIAudioStreamer::Bridge::ConfirmPairing(const QString& code)
 {
-    auto* network = NetworkObject.get();
-    QMetaObject::invokeMethod(network, [network, code] { network->ConfirmPairing(code); },
-        Qt::QueuedConnection);
+    OnNetwork([code](auto& network) { network.ConfirmPairing(code); });
 }
 
 void HIAudioStreamer::Bridge::CancelPairing()
 {
-    auto* network = NetworkObject.get();
-    QMetaObject::invokeMethod(network, [network] { network->CancelPairing(); },
-        Qt::QueuedConnection);
+    OnNetwork([](auto& network) { network.CancelPairing(); });
 }

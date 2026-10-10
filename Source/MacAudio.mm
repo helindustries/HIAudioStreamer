@@ -1,19 +1,23 @@
 #include "AudioBackend.h"
-
-#include <QtCore/QString>
+#include "Protocol.h"
 
 #import <CoreAudio/AudioHardware.h>
 #import <CoreAudio/AudioHardwareTapping.h>
 #import <CoreAudio/CATapDescription.h>
 #import <Foundation/Foundation.h>
+#include <QtCore/QString>
 
 #include <algorithm>
 #include <cstddef>
+#include <span>
 #include <unistd.h>
 #include <vector>
 
+// <editor-fold desc="Helpers">
 namespace
 {
+    using HIAudioStreamer::Channels;
+
     constexpr auto MaxFrames = std::size_t{8192};
 
     struct ChannelRef
@@ -46,10 +50,11 @@ namespace
         AudioObjectID Tap = kAudioObjectUnknown;
         AudioDeviceIOProcID Proc = nullptr;
         QString Failure;
-        std::vector<float> Scratch = std::vector<float>(MaxFrames * 2);
+        std::vector<float> Scratch = std::vector<float>(MaxFrames * Channels);
     };
 
-    AudioObjectPropertyAddress Address(AudioObjectPropertySelector selector,
+    AudioObjectPropertyAddress Address(
+        AudioObjectPropertySelector selector,
         AudioObjectPropertyScope scope = kAudioObjectPropertyScopeGlobal)
     {
         return {selector, scope, kAudioObjectPropertyElementMain};
@@ -60,13 +65,25 @@ namespace
         return QStringLiteral("%1 failed (OSStatus %2)").arg(QString::fromUtf8(what)).arg(status);
     }
 
+    std::span<AudioBuffer> Buffers(AudioBufferList* list)
+    {
+        return list != nullptr ? std::span(&list->mBuffers[0], list->mNumberBuffers)
+                               : std::span<AudioBuffer>();
+    }
+
+    std::span<const AudioBuffer> Buffers(const AudioBufferList* list)
+    {
+        return list != nullptr ? std::span(&list->mBuffers[0], list->mNumberBuffers)
+                               : std::span<const AudioBuffer>();
+    }
+
     QString StringProperty(AudioObjectID object, AudioObjectPropertySelector selector)
     {
         auto address = Address(selector);
-        auto value = CFStringRef{nullptr};
-        auto size = UInt32{sizeof(value)};
+        auto size = UInt32{sizeof(CFStringRef)};
         auto text = QString();
-        if (AudioObjectGetPropertyData(object, &address, 0, nullptr, &size, &value) == noErr
+        if (auto value = CFStringRef{nullptr};
+            AudioObjectGetPropertyData(object, &address, 0, nullptr, &size, &value) == noErr
             && value != nullptr)
         {
             text = QString::fromCFString(value);
@@ -78,15 +95,18 @@ namespace
     int ChannelCount(AudioObjectID device, AudioObjectPropertyScope scope)
     {
         auto address = Address(kAudioDevicePropertyStreamConfiguration, scope);
-        auto size = UInt32{0};
         auto channels = 0;
-        if (AudioObjectGetPropertyDataSize(device, &address, 0, nullptr, &size) == noErr && size > 0)
+        if (auto size = UInt32{0};
+            AudioObjectGetPropertyDataSize(device, &address, 0, nullptr, &size) == noErr
+            && size > 0)
         {
             auto storage = std::vector<std::byte>(size);
-            auto* list = reinterpret_cast<AudioBufferList*>(storage.data());
-            if (AudioObjectGetPropertyData(device, &address, 0, nullptr, &size, list) == noErr)
-                for (auto i = UInt32{0}; i < list->mNumberBuffers; ++i)
-                    channels += static_cast<int>(list->mBuffers[i].mNumberChannels);
+            if (auto* list = reinterpret_cast<AudioBufferList*>(storage.data());
+                AudioObjectGetPropertyData(device, &address, 0, nullptr, &size, list) == noErr)
+            {
+                for (const auto& buffer : Buffers(list))
+                    channels += static_cast<int>(buffer.mNumberChannels);
+            }
         }
         return channels;
     }
@@ -113,15 +133,14 @@ namespace
     AudioObjectID DeviceForUid(const QString& uid, bool input)
     {
         auto device = AudioObjectID{kAudioObjectUnknown};
-        if (uid.isEmpty())
-            device = DefaultDevice(input);
+        if (uid.isEmpty()) device = DefaultDevice(input);
         else
         {
             auto address = Address(kAudioHardwarePropertyTranslateUIDToDevice);
             auto cfUid = uid.toCFString();
             auto size = UInt32{sizeof(device)};
             AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, sizeof(cfUid), &cfUid,
-                &size, &device);
+                                       &size, &device);
             CFRelease(cfUid);
         }
         return device;
@@ -133,35 +152,65 @@ namespace
     {
         auto found = ChannelRef();
         auto base = 0;
-        for (auto i = UInt32{0}; list != nullptr && i < list->mNumberBuffers && found.Data == nullptr; ++i)
+        for (const auto& buffer : Buffers(list))
         {
-            const auto& buffer = list->mBuffers[i];
             const auto count = static_cast<int>(buffer.mNumberChannels);
-            if (channel < base + count && buffer.mData != nullptr && count > 0)
-                found = {static_cast<float*>(buffer.mData) + (channel - base), buffer.mNumberChannels,
-                    buffer.mDataByteSize / (buffer.mNumberChannels * sizeof(float))};
+            if (found.Data == nullptr && channel >= base && channel < base + count
+                && buffer.mData != nullptr)
+            {
+                found = {static_cast<float*>(buffer.mData) + (channel - base),
+                         buffer.mNumberChannels,
+                         buffer.mDataByteSize / (buffer.mNumberChannels * sizeof(float))};
+            }
             base += count;
         }
         return found;
     }
 
-    void StartInput(CoreAudioStream& stream, int firstChannel, HIAudioStreamer::CaptureCallback callback)
+    // A tap on everything but this process; nothing when this process has no audio object yet,
+    // which it only gets once it plays. Leaving this process out is what keeps two machines that
+    // send each other their system audio from feeding back, and what keeps a mute from
+    // silencing what this process plays itself.
+    CATapDescription* TapExcludingThisProcess(NSString* name, CATapMuteBehavior behavior)
+    {
+        auto address = Address(kAudioHardwarePropertyTranslatePIDToProcessObject);
+        auto pid = getpid();
+        auto process = AudioObjectID{kAudioObjectUnknown};
+        auto size = UInt32{sizeof(process)};
+        auto* description = static_cast<CATapDescription*>(nil);
+        if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, sizeof(pid), &pid, &size,
+                                       &process)
+                == noErr
+            && process != kAudioObjectUnknown)
+        {
+            description = [[CATapDescription alloc]
+                initStereoGlobalTapButExcludeProcesses:@[ @(process) ]];
+            description.name = name;
+            description.privateTap = YES;
+            description.muteBehavior = behavior;
+        }
+        return description;
+    }
+
+    void StartInput(CoreAudioStream& stream, int firstChannel,
+                    HIAudioStreamer::CaptureCallback callback)
     {
         const auto rate = NominalRate(stream.Device);
         auto* target = &stream;
-        auto status = AudioDeviceCreateIOProcIDWithBlock(&stream.Proc, stream.Device, nullptr,
+        auto status = AudioDeviceCreateIOProcIDWithBlock(
+            &stream.Proc, stream.Device, nullptr,
             ^(const AudioTimeStamp*, const AudioBufferList* input, const AudioTimeStamp*,
-                AudioBufferList*, const AudioTimeStamp*) {
+              AudioBufferList*, const AudioTimeStamp*) {
                 const auto left = FindChannel(input, firstChannel);
-                auto right = FindChannel(input, firstChannel + 1);
-                if (right.Data == nullptr) right = left;
+                const auto second = FindChannel(input, firstChannel + 1);
+                const auto right = second.Data != nullptr ? second : left;
                 if (left.Data != nullptr)
                 {
                     const auto frames = std::min({left.Frames, right.Frames, MaxFrames});
                     for (auto i = std::size_t{0}; i < frames; ++i)
                     {
-                        target->Scratch[i * 2] = left.Data[i * left.Stride];
-                        target->Scratch[i * 2 + 1] = right.Data[i * right.Stride];
+                        target->Scratch[i * Channels] = left.Data[i * left.Stride];
+                        target->Scratch[i * Channels + 1] = right.Data[i * right.Stride];
                     }
                     callback(target->Scratch.data(), frames, rate);
                 }
@@ -174,22 +223,27 @@ namespace
     {
         const auto rate = NominalRate(stream.Device);
         auto* target = &stream;
-        auto status = AudioDeviceCreateIOProcIDWithBlock(&stream.Proc, stream.Device, nullptr,
+        auto status = AudioDeviceCreateIOProcIDWithBlock(
+            &stream.Proc, stream.Device, nullptr,
             ^(const AudioTimeStamp*, const AudioBufferList*, const AudioTimeStamp*,
-                AudioBufferList* output, const AudioTimeStamp*) {
-                const auto first = FindChannel(output, 0);
-                const auto frames = std::min(first.Frames, MaxFrames);
-                std::fill(target->Scratch.begin(), target->Scratch.begin() + frames * 2, 0.0f);
-                callback(target->Scratch.data(), frames, rate);
+              AudioBufferList* output, const AudioTimeStamp*) {
+                const auto frames = std::min(FindChannel(output, 0).Frames, MaxFrames);
+                const auto mix = std::span(target->Scratch).first(frames * Channels);
+                std::ranges::fill(mix, 0.0f);
+                callback(mix.data(), frames, rate);
+                // Spread the stereo mix over the device's buffers, silencing any channel past it.
                 auto base = 0;
-                for (auto b = UInt32{0}; b < output->mNumberBuffers; ++b)
+                for (auto& buffer : Buffers(output))
                 {
-                    auto& buffer = output->mBuffers[b];
-                    auto* data = static_cast<float*>(buffer.mData);
                     const auto channels = static_cast<int>(buffer.mNumberChannels);
-                    for (auto i = std::size_t{0}; data != nullptr && i < frames; ++i)
-                        for (auto c = 0; c < channels; ++c)
-                            data[i * channels + c] = base + c < 2 ? target->Scratch[i * 2 + base + c] : 0.0f;
+                    if (auto* data = static_cast<float*>(buffer.mData); data != nullptr)
+                        for (auto i = std::size_t{0}; i < frames; ++i)
+                            for (auto c = 0; c < channels; ++c)
+                            {
+                                const auto source = base + c;
+                                data[i * channels + c] =
+                                    source < Channels ? mix[i * Channels + source] : 0.0f;
+                            }
                     base += channels;
                 }
             });
@@ -200,46 +254,39 @@ namespace
     QList<HIAudioStreamer::DeviceInfo> Devices(AudioObjectPropertyScope scope)
     {
         auto address = Address(kAudioHardwarePropertyDevices);
-        auto size = UInt32{0};
         auto devices = QList<HIAudioStreamer::DeviceInfo>();
-        if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &address, 0, nullptr, &size)
+        if (auto size = UInt32{0};
+            AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &address, 0, nullptr, &size)
             == noErr)
         {
             auto ids = std::vector<AudioObjectID>(size / sizeof(AudioObjectID));
             if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, nullptr, &size,
-                    ids.data())
+                                           ids.data())
                 == noErr)
+            {
                 for (const auto id : ids)
                     if (ChannelCount(id, scope) > 0)
+                    {
                         devices.append({StringProperty(id, kAudioDevicePropertyDeviceUID),
-                            StringProperty(id, kAudioObjectPropertyName)});
+                                        StringProperty(id, kAudioObjectPropertyName)});
+                    }
+            }
         }
+        if (devices.isEmpty()) qWarning("No audio devices found for scope %u", scope);
         return devices;
     }
 } // namespace
+// </editor-fold>
 
-std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartSystemCapture(CaptureCallback callback)
+// <editor-fold desc="Streams and devices">
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartSystemCapture(
+    CaptureCallback callback)
 {
     auto stream = std::make_unique<CoreAudioStream>();
-    if (@available(macOS 14.2, *))
+    if (auto* description = TapExcludingThisProcess(@"HIAudioStreamer", CATapUnmuted);
+        description != nil)
     {
-        // Excluding this process is what stops two machines that send each other their system
-        // audio from feeding back. The process only has an audio object once it plays, which is
-        // why the receiving side is started first.
-        auto pidAddress = Address(kAudioHardwarePropertyTranslatePIDToProcessObject);
-        auto pid = getpid();
-        auto process = AudioObjectID{kAudioObjectUnknown};
-        auto size = UInt32{sizeof(process)};
-        AudioObjectGetPropertyData(kAudioObjectSystemObject, &pidAddress, sizeof(pid), &pid,
-            &size, &process);
-        auto* excluded = process != kAudioObjectUnknown ? @[ @(process) ] : @[];
-        auto* description =
-            [[CATapDescription alloc] initStereoGlobalTapButExcludeProcesses:excluded];
-        description.name = @"HIAudioStreamer";
-        description.privateTap = YES;
-        description.muteBehavior = CATapUnmuted;
         auto status = AudioHardwareCreateProcessTap(description, &stream->Tap);
-
         // A tap is read through an aggregate device. The default output is its clock, and its
         // own input channels, if it has any, come before the tap's two.
         const auto output = DefaultDevice(false);
@@ -247,56 +294,56 @@ std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartSystemCaptur
         if (status == noErr)
         {
             auto* aggregate = @{
-                @kAudioAggregateDeviceNameKey: @"HIAudioStreamer System Audio",
-                @kAudioAggregateDeviceUIDKey: [[NSUUID UUID] UUIDString],
-                @kAudioAggregateDeviceMainSubDeviceKey: outputUid,
-                @kAudioAggregateDeviceIsPrivateKey: @YES,
-                @kAudioAggregateDeviceIsStackedKey: @NO,
-                @kAudioAggregateDeviceTapAutoStartKey: @YES,
-                @kAudioAggregateDeviceSubDeviceListKey: @[ @{ @kAudioSubDeviceUIDKey: outputUid } ],
-                @kAudioAggregateDeviceTapListKey: @[ @{
-                    @kAudioSubTapDriftCompensationKey: @YES,
-                    @kAudioSubTapUIDKey: description.UUID.UUIDString,
+                @kAudioAggregateDeviceNameKey : @"HIAudioStreamer System Audio",
+                @kAudioAggregateDeviceUIDKey : [[NSUUID UUID] UUIDString],
+                @kAudioAggregateDeviceMainSubDeviceKey : outputUid,
+                @kAudioAggregateDeviceIsPrivateKey : @YES,
+                @kAudioAggregateDeviceIsStackedKey : @NO,
+                @kAudioAggregateDeviceTapAutoStartKey : @YES,
+                @kAudioAggregateDeviceSubDeviceListKey : @[
+                    @{@kAudioSubDeviceUIDKey : outputUid}
+                ],
+                @kAudioAggregateDeviceTapListKey : @[ @{
+                    @kAudioSubTapDriftCompensationKey : @YES,
+                    @kAudioSubTapUIDKey : description.UUID.UUIDString,
                 } ],
             };
             status = AudioHardwareCreateAggregateDevice((__bridge CFDictionaryRef)aggregate,
-                &stream->Aggregate);
+                                                        &stream->Aggregate);
         }
         if (status == noErr)
         {
             stream->Device = stream->Aggregate;
             StartInput(*stream, ChannelCount(output, kAudioObjectPropertyScopeInput),
-                std::move(callback));
+                       std::move(callback));
         }
-        else
-            stream->Failure = Describe("Creating the system audio tap", status);
+        else stream->Failure = Describe("Creating the system audio tap", status);
     }
     else
-        stream->Failure = QStringLiteral("System audio capture needs macOS 14.2 or later");
+    {
+        stream->Failure =
+            QStringLiteral("This process has no audio object to leave out of the capture yet");
+    }
     return stream;
 }
 
-std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartDeviceCapture(const QString& deviceId,
-    CaptureCallback callback)
+std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartDeviceCapture(
+    const QString& deviceId, CaptureCallback callback)
 {
     auto stream = std::make_unique<CoreAudioStream>();
-    stream->Device = DeviceForUid(deviceId, true);
-    if (stream->Device != kAudioObjectUnknown)
+    if (stream->Device = DeviceForUid(deviceId, true); stream->Device != kAudioObjectUnknown)
         StartInput(*stream, 0, std::move(callback));
-    else
-        stream->Failure = QStringLiteral("Input device %1 not found").arg(deviceId);
+    else stream->Failure = QStringLiteral("Input device %1 not found").arg(deviceId);
     return stream;
 }
 
 std::unique_ptr<HIAudioStreamer::AudioStream> HIAudioStreamer::StartRender(const QString& deviceId,
-    RenderCallback callback)
+                                                                           RenderCallback callback)
 {
     auto stream = std::make_unique<CoreAudioStream>();
-    stream->Device = DeviceForUid(deviceId, false);
-    if (stream->Device != kAudioObjectUnknown)
+    if (stream->Device = DeviceForUid(deviceId, false); stream->Device != kAudioObjectUnknown)
         StartOutput(*stream, std::move(callback));
-    else
-        stream->Failure = QStringLiteral("Output device %1 not found").arg(deviceId);
+    else stream->Failure = QStringLiteral("Output device %1 not found").arg(deviceId);
     return stream;
 }
 
@@ -314,7 +361,9 @@ QString HIAudioStreamer::DefaultOutputId()
 {
     return StringProperty(DefaultDevice(false), kAudioDevicePropertyDeviceUID);
 }
+// </editor-fold>
 
+// <editor-fold desc="Local mute">
 namespace
 {
     // A second, muting tap that nothing reads: while it exists every process but this one is
@@ -325,25 +374,15 @@ namespace
     public:
         TapMute()
         {
-            if (@available(macOS 14.2, *))
+            if (auto* description = TapExcludingThisProcess(@"HIAudioStreamer mute", CATapMuted);
+                description == nil)
             {
-                auto pidAddress = Address(kAudioHardwarePropertyTranslatePIDToProcessObject);
-                auto pid = getpid();
-                auto process = AudioObjectID{kAudioObjectUnknown};
-                auto size = UInt32{sizeof(process)};
-                AudioObjectGetPropertyData(kAudioObjectSystemObject, &pidAddress, sizeof(pid),
-                    &pid, &size, &process);
-                auto* excluded = process != kAudioObjectUnknown ? @[ @(process) ] : @[];
-                auto* description =
-                    [[CATapDescription alloc] initStereoGlobalTapButExcludeProcesses:excluded];
-                description.name = @"HIAudioStreamer mute";
-                description.privateTap = YES;
-                description.muteBehavior = CATapMuted;
-                const auto status = AudioHardwareCreateProcessTap(description, &Tap);
-                if (status != noErr) Failure = Describe("Muting the local output", status);
+                Failure =
+                    QStringLiteral("This process has no audio object to leave out of the mute");
             }
-            else
-                Failure = QStringLiteral("Muting the local output needs macOS 14.2 or later");
+            else if (const auto status = AudioHardwareCreateProcessTap(description, &Tap);
+                     status != noErr)
+                Failure = Describe("Muting the local output", status);
         }
 
         ~TapMute() override
@@ -364,6 +403,6 @@ std::unique_ptr<HIAudioStreamer::LocalMute> HIAudioStreamer::MuteLocalOutput()
     return std::make_unique<TapMute>();
 }
 
-void HIAudioStreamer::RestoreLocalOutput()
-{
-}
+// Nothing to undo: the muting tap dies with the process.
+void HIAudioStreamer::RestoreLocalOutput() {}
+// </editor-fold>

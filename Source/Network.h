@@ -16,34 +16,44 @@
 #include <memory>
 #include <mutex>
 #include <semaphore>
+#include <span>
 #include <thread>
 #include <vector>
 
 namespace HIAudioStreamer
 {
+    // The peaks are the highest absolute sample since the last diagnostics line, in thousandths
+    // of full scale. Packets flowing say nothing about whether they carry sound; these do.
+    static constexpr auto PeakScale = 1000.0f;
+
+    // One per paired machine, in the same slot as its Playout.
+    struct PeerStats
+    {
+        std::atomic<qint64> LastReceivedMs{0};
+        std::atomic<quint64> PacketsReceived{0};
+        std::atomic<qint64> LastListeningMs{0};
+        std::atomic<int> ReceivedPeak{0};
+    };
+
     struct LinkStats
     {
         std::atomic<int> CaptureRate{0};
         std::atomic<quint64> PacketsSent{0};
         std::atomic<quint64> PacketsRejected{0};
-        std::array<std::atomic<qint64>, MaxPeers> LastReceivedMs{};
-        std::array<std::atomic<quint64>, MaxPeers> PacketsReceived{};
-        std::array<std::atomic<qint64>, MaxPeers> LastListeningMs{};
-        // Highest absolute sample since the last diagnostics line, in thousandths of full scale.
-        // Packets flowing say nothing about whether they carry sound; these do.
         std::atomic<int> CapturePeak{0};
-        std::array<std::atomic<int>, MaxPeers> ReceivedPeak{};
+        std::array<PeerStats, MaxPeers> Peers{};
     };
 
     // Raises a peak counter to the loudest of the given samples; lock-free, real-time safe.
-    inline void RecordPeak(std::atomic<int>& peak, const float* samples, std::size_t count)
+    inline void RecordPeak(std::atomic<int>& peak, std::span<const float> samples)
     {
         auto loudest = 0.0f;
-        for (auto i = std::size_t{0}; i < count; ++i)
-            loudest = std::max(loudest, std::abs(samples[i]));
-        const auto value = static_cast<int>(loudest * 1000.0f);
+        for (const auto sample : samples)
+            loudest = std::max(loudest, std::abs(sample));
+        const auto value = static_cast<int>(loudest * PeakScale);
         auto seen = peak.load(std::memory_order_relaxed);
-        while (value > seen && !peak.compare_exchange_weak(seen, value, std::memory_order_relaxed)) {}
+        while (value > seen && !peak.compare_exchange_weak(seen, value, std::memory_order_relaxed))
+        {}
     }
 
     // Lives on its own thread: on macOS the event loop stops while a tray menu is open, and audio
@@ -60,7 +70,7 @@ namespace HIAudioStreamer
 
     public:
         Network(RingBuffer& outgoing, std::vector<std::unique_ptr<Playout>>& incoming,
-            LinkStats& stats);
+                LinkStats& stats);
         ~Network() override;
 
         // Real-time safe: called from the capture callback after it wrote to the outgoing ring.

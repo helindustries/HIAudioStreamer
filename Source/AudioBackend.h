@@ -33,10 +33,10 @@ namespace HIAudioStreamer
     // each other their system audio do not feed back.
     [[nodiscard]] std::unique_ptr<AudioStream> StartSystemCapture(CaptureCallback callback);
     [[nodiscard]] std::unique_ptr<AudioStream> StartDeviceCapture(const QString& deviceId,
-        CaptureCallback callback);
+                                                                  CaptureCallback callback);
     // An empty device id means the system default output.
     [[nodiscard]] std::unique_ptr<AudioStream> StartRender(const QString& deviceId,
-        RenderCallback callback);
+                                                           RenderCallback callback);
 
     [[nodiscard]] QList<DeviceInfo> InputDevices();
     [[nodiscard]] QList<DeviceInfo> OutputDevices();

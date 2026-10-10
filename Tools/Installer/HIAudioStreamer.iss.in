@@ -10,7 +10,7 @@ AppId={{E7C428E2-8FE7-4048-B475-524B721928BE}
 AppName={#AppName}
 AppVersion=@PROJECT_VERSION@
 AppPublisher=Hel Industries
-AppPublisherURL=https://github.com/helindustries/HIAudioStreamer
+AppPublisherURL=https://github.com/helindustries/hi-audio-streamer
 DefaultDirName={autopf}\{#AppName}
 DisableProgramGroupPage=yes
 ; The firewall rule that lets peers in needs elevation.

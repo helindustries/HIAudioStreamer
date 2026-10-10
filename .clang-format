@@ -1,5 +1,5 @@
 ---
-Language: Cpp
+# No Language key: the same rules cover C++ and Objective-C++.
 # BasedOnStyle: LLVM
 AccessModifierOffset: -4
 AlignAfterOpenBracket: Align
@@ -9,12 +9,12 @@ AlignEscapedNewlines: Right
 AlignOperands: true
 AlignTrailingComments: true
 AllowAllParametersOfDeclarationOnNextLine: true
-AllowShortBlocksOnASingleLine: Never
+AllowShortBlocksOnASingleLine: Empty
 AllowShortCaseLabelsOnASingleLine: false
-AllowShortFunctionsOnASingleLine: None
-AllowShortIfStatementsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
 AllowShortLoopsOnASingleLine: false
-AllowShortLambdasOnASingleLine: None
+AllowShortLambdasOnASingleLine: All
 AlwaysBreakAfterDefinitionReturnType: None
 AlwaysBreakAfterReturnType: None
 AlwaysBreakBeforeMultilineStrings: false
@@ -35,9 +35,9 @@ BraceWrapping:
   BeforeCatch: true
   BeforeElse: true
   IndentBraces: false
-  SplitEmptyFunction: true
-  SplitEmptyRecord: true
-  SplitEmptyNamespace: true
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
 BreakBeforeBinaryOperators: NonAssignment
 BreakBeforeBraces: Custom
 BreakBeforeInheritanceComma: true
@@ -47,7 +47,7 @@ BreakStringLiterals: true
 ColumnLimit: 100
 CommentPragmas: '^ IWYU pragma:'
 CompactNamespaces: false
-ConstructorInitializerAllOnOneLineOrOnePerLine: false
+PackConstructorInitializers: Never
 ConstructorInitializerIndentWidth: 4
 ContinuationIndentWidth: 4
 Cpp11BracedListStyle: true
@@ -56,26 +56,34 @@ DisableFormat: false
 ExperimentalAutoDetectBinPacking: false
 FixNamespaceComments: true
 ForEachMacros: [ foreach, Q_FOREACH, BOOST_FOREACH ]
-IncludeBlocks: Merge
+# A blank line between groups: the matching header, project headers, subsystem-path headers,
+# then system headers. Project headers in a subdirectory share the project group, after the rest.
+IncludeBlocks: Regroup
 IncludeCategories:
   - Regex:           '^".*\.generated.h"'
     Priority:        1000
   - Regex:           '^"(Frameworks)|(3rd-party)/'
     Priority:        40
   - Regex:           '^"[A-Z].*/'
-    Priority:        20
+    Priority:        10
+    SortPriority:    20
+    CaseSensitive:   true
   - Regex:           '^<[A-Z].*/'
     Priority:        90
+    CaseSensitive:   true
   - Regex:           '^<[a-zA-Z0-9_-]+/'
     Priority:        100
   - Regex:           '^<[A-Z]'
     Priority:        80
+    CaseSensitive:   true
   - Regex:           '^<'
     Priority:        110
   - Regex:           '^"[a-z]'
     Priority:        50
+    CaseSensitive:   true
   - Regex:           '^"[A-Z]'
     Priority:        10
+    CaseSensitive:   true
 IndentCaseLabels: true
 IndentWidth: 4
 IndentWrappedFunctionNames: false
@@ -96,7 +104,7 @@ PenaltyExcessCharacter: 100
 PenaltyReturnTypeOnItsOwnLine: 1000000
 PointerAlignment: Left
 ReflowComments: false
-SortIncludes: true
+SortIncludes: CaseSensitive
 SortUsingDeclarations: false
 SpaceAfterCStyleCast: false
 SpaceAfterTemplateKeyword: false
@@ -109,7 +117,7 @@ SpacesInContainerLiterals: true
 SpacesInCStyleCastParentheses: false
 SpacesInParentheses: false
 SpacesInSquareBrackets: false
-Standard: Cpp11
+Standard: Latest
 TabWidth: 4
 UseTab: Never
 ...
